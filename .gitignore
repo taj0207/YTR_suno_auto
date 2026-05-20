@@ -16,6 +16,11 @@ data/.cache/
 *.mp3
 *.flac
 
+# User-specific input + generated pipeline state
+artist_list.yaml
+song_list.yaml
+song_list_pending.yaml
+
 # Playwright
 storage_state.json
 .playwright/
