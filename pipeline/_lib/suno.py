@@ -168,14 +168,15 @@ class SunoClient:
 
         status, resp = self._post_generate_raw(body)
 
-        # 422 token_validation_failed → cached template has a stale
-        # create_session_token. Reload suno.com (which refreshes the SPA's
-        # session) and wait for a fresh template, then retry once.
-        if status == 422 and b"token_validation" in resp.lower():
+        # 422 from /generate is essentially always token_validation_failed →
+        # cached template has a stale create_session_token. Reload suno.com
+        # (refreshes the SPA's session) and wait for a fresh template, then
+        # retry once.
+        if status == 422:
             import sys as _sys
             print(
-                "\n[suno] 422 token_validation_failed — session token in the "
-                "cached template has expired.",
+                f"\n[suno] 422 from /generate — likely session token expired."
+                f"\n       body: {resp[:300].decode(errors='replace')}",
                 file=_sys.stderr,
             )
             self.bridge.clear_generate_template()
@@ -221,22 +222,40 @@ class SunoClient:
     # --- feed / status ------------------------------------------------------
 
     def fetch_feed(self, song_ids: list[str]) -> list[dict]:
+        """Suno's observed shape for feed-by-ids:
+            POST /api/feed/v3
+            { "filters": { "ids": { "presence":"True", "clipIds":[...] } },
+              "limit": N }
+        Returns only the requested clips. Going through the bridge so cookies +
+        SPA auth attach correctly.
+        """
         if not song_ids:
             return []
-        try:
-            r = self.s.post(self._url("feed_by_ids_post"),
-                            json={"ids": song_ids}, timeout=30)
-            if r.ok:
-                data = r.json()
-                return data if isinstance(data, list) else data.get("clips", [])
-        except Exception:
-            pass
-        url = self._url("feed_by_ids_get") + "?ids=" + ",".join(song_ids) + "&page=0"
-        r = self.s.get(url, timeout=30)
-        if not r.ok:
-            raise SunoError(f"feed failed: {r.status_code} {r.text[:500]}")
-        data = r.json()
-        return data if isinstance(data, list) else data.get("clips", [])
+        body = {
+            "filters": {"ids": {"presence": "True", "clipIds": list(song_ids)}},
+            "limit":   len(song_ids),
+        }
+        if self.bridge:
+            auth = self.s.headers.get("Authorization") or ""
+            status, _hdrs, resp = self.bridge.fetch(
+                self._url("feed_by_ids_post"), method="POST",
+                headers={"Content-Type": "application/json", "Authorization": auth},
+                body=json.dumps(body), timeout=30,
+            )
+            if status >= 400:
+                raise SunoError(f"feed failed: {status} {resp[:500].decode(errors='replace')}")
+            data = json.loads(resp)
+        else:
+            r = self.s.post(self._url("feed_by_ids_post"), json=body, timeout=30)
+            if not r.ok:
+                raise SunoError(f"feed failed: {r.status_code} {r.text[:500]}")
+            data = r.json()
+        if isinstance(data, list):
+            return data
+        for key in ("clips", "results", "data", "items"):
+            if isinstance(data.get(key), list):
+                return data[key]
+        return []
 
     # --- WAV (verified flow from suno_downloader extension) ----------------
 
