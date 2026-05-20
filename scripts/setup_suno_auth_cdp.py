@@ -73,7 +73,7 @@ def chrome_running() -> bool:
         return False
 
 
-def launch_chrome_with_cdp(user_data_dir: Path) -> None:
+def launch_chrome_with_cdp(user_data_dir: Path, profile: str) -> None:
     chrome = find_chrome()
     if not chrome:
         raise RuntimeError("chrome.exe not found in standard locations")
@@ -92,16 +92,19 @@ def launch_chrome_with_cdp(user_data_dir: Path) -> None:
             "      Then re-run this script.\n\n"
             "  (b) Or start Chrome YOURSELF with the debug flag, then re-run:\n"
             f'      & "{chrome}" --remote-debugging-port=9222 '
-            f'--user-data-dir="{user_data_dir}"\n'
+            f'--user-data-dir="{user_data_dir}" '
+            f'--profile-directory="{profile}"\n'
         )
 
     print(f"starting Chrome at {chrome}")
     print(f"  --remote-debugging-port=9222")
     print(f"  --user-data-dir={user_data_dir}")
+    print(f"  --profile-directory={profile}")
     subprocess.Popen([
         str(chrome),
         "--remote-debugging-port=9222",
         f"--user-data-dir={user_data_dir}",
+        f"--profile-directory={profile}",   # skip the profile picker
         "--no-first-run",
         "--no-default-browser-check",
     ])
@@ -114,8 +117,12 @@ def launch_chrome_with_cdp(user_data_dir: Path) -> None:
         time.sleep(0.5)
     raise RuntimeError(
         f"Chrome didn't start a CDP listener on {CDP_BASE} within 30s.\n"
-        "Most likely Chrome silently routed into an already-running process. "
-        "Close ALL Chrome (including system-tray icon) and try again."
+        "Most likely:\n"
+        "  - Chrome silently routed into an already-running process. Close ALL\n"
+        "    Chrome (including system-tray icon) and try again, OR\n"
+        f"  - Profile '{profile}' doesn't exist. List your profiles:\n"
+        f"    Get-ChildItem '{user_data_dir}' -Directory | Select-Object Name\n"
+        "    Set $env:SUNO_CHROME_PROFILE to the right one."
     )
 
 
@@ -132,16 +139,14 @@ def main() -> int:
             os.environ.get("SUNO_CHROME_USER_DATA")
             or (Path(os.environ.get("LOCALAPPDATA", "")) / "Google" / "Chrome" / "User Data")
         )
+        profile = os.environ.get("SUNO_CHROME_PROFILE", "Default")
         if not user_data_dir.exists():
             print(f"can't find Chrome User Data at {user_data_dir}", file=sys.stderr)
             return 2
         try:
-            launch_chrome_with_cdp(user_data_dir)
+            launch_chrome_with_cdp(user_data_dir, profile)
         except Exception as e:  # noqa: BLE001
             print(f"[fail] {e}", file=sys.stderr)
-            print("If Chrome was already running with a different profile, "
-                  "close ALL Chrome windows (and system-tray icon) and re-run.",
-                  file=sys.stderr)
             return 1
     else:
         print("[ok ] using existing Chrome with debug port at localhost:9222")
