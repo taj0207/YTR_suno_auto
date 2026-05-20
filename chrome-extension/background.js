@@ -74,6 +74,12 @@ async function findSunoTab() {
   return null;
 }
 
+async function findKkboxTab() {
+  const tabs = await chrome.tabs.query({ url: ["*://*.kkbox.com/*", "*://kkbox.com/*"] });
+  if (tabs.length) return tabs[0];
+  return null;
+}
+
 function bytesToB64(buf) {
   let s = "";
   const view = new Uint8Array(buf);
@@ -133,15 +139,23 @@ async function proxyFetch(args) {
   let host = "";
   try { host = new URL(args.url).host.toLowerCase(); } catch (_) {}
 
-  // For Suno API calls, route through a suno.com tab so the SPA-rotated JWT
-  // and Service Worker handling apply. For everything else (KKBox), use the
-  // service worker — cross-origin is fine with host_permissions, and the
-  // user's Chrome cookies (e.g. WAF challenge cookie) attach automatically.
+  // Route through a same-origin tab whenever possible — SW cross-origin
+  // fetch loses SameSite=Lax cookies, which kills KKBox's WAF cookie.
   if (host.endsWith("suno.com") || host.endsWith("suno.ai")) {
     const tab = await findSunoTab();
     if (tab) return await tabMainWorldFetch(tab, args);
-    // fall through to SW fetch if no tab — limited but better than failing
   }
+  if (host.endsWith("kkbox.com")) {
+    const tab = await findKkboxTab();
+    if (!tab) {
+      throw new Error(
+        "no kkbox.com tab open in this Chrome — open https://www.kkbox.com/ " +
+        "so the WAF cookie can attach to subsequent fetches"
+      );
+    }
+    return await tabMainWorldFetch(tab, args);
+  }
+  // Other origins: try SW fetch as a generic fallback.
   return await swFetch(args);
 }
 
