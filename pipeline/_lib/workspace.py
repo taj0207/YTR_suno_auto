@@ -36,7 +36,12 @@ class Workspace:
             keep_trailing_newline=True,
         )
         tmpl = env.get_template(f"prompt_{variant}.j2")
-        return tmpl.render(**context)
+        # Expose workspace config to templates so they can reference fields
+        # like {{ vocal }}, {{ vocal_style }}, etc. Caller-supplied kwargs
+        # override config keys with the same name.
+        ctx = dict(self.config)
+        ctx.update(context)
+        return tmpl.render(**ctx)
 
     def config_text(self) -> str:
         """Raw config.yaml text — used as a hash input so config changes invalidate caches."""

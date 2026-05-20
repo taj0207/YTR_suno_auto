@@ -1,6 +1,10 @@
 name: billie_eilish_depressed
 display_name: "Depressed Billie Eilish (Male Vocal)"
 
+# Voice settings — referenced from prompt_3_*.j2 via {{ vocal }} etc.
+vocal: "male"                # "male" | "female" | "androgynous" | etc.
+vocal_style: ""              # extra qualifier, e.g. "raspy", "breathy"
+
 suno:
   wid: "84cca4a7-1ed8-43eb-984a-94d451900800"
   workspace_url: "https://suno.com/create?wid=84cca4a7-1ed8-43eb-984a-94d451900800"
