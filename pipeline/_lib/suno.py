@@ -169,7 +169,31 @@ class SunoClient:
         if not self.bridge:
             raise SunoError("bridge required for generate")
 
-        status, resp = self._post_generate_raw(body)
+        # Network-layer transient retry. MAIN-world fetches inside the suno.com
+        # tab occasionally die with TypeError: Failed to fetch when the tab is
+        # mid-navigation or the connection blips. Retry once before giving up.
+        status, resp = (-1, b"")
+        last_err: Exception | None = None
+        for attempt in range(2):
+            try:
+                status, resp = self._post_generate_raw(body)
+                break
+            except (suno_bridge.SunoBridgeError, SunoError) as e:
+                last_err = e
+                msg = str(e).lower()
+                if "failed to fetch" not in msg and "typeerror" not in msg:
+                    raise SunoError(str(e)) from e
+                import sys as _sys
+                print(
+                    f"[suno] transient fetch error (attempt {attempt+1}/2): {e}",
+                    file=_sys.stderr,
+                )
+                if attempt == 0:
+                    time.sleep(5)
+                    continue
+                raise SunoError(str(e)) from e
+        if status == -1 and last_err is not None:
+            raise SunoError(str(last_err)) from last_err
 
         # 422 from /generate is essentially always token_validation_failed →
         # cached template has a stale create_session_token. Reload suno.com
