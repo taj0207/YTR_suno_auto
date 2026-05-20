@@ -201,6 +201,20 @@ class SunoBridge:
             return None
         return r.get("template")
 
+    def clear_generate_template(self) -> None:
+        try:
+            self._send({"cmd": "clearGenerateTemplate"}, timeout=5)
+        except SunoBridgeError:
+            pass
+        self._template_event.clear()
+
+    def reload_suno_tab(self) -> bool:
+        try:
+            r = self._send({"cmd": "reloadSunoTab"}, timeout=10)
+            return bool(r.get("ok"))
+        except SunoBridgeError:
+            return False
+
     def wait_for_template(self, timeout: float = 180) -> str:
         """Return a template — block until extension captures one if needed."""
         tpl = self.get_generate_template()

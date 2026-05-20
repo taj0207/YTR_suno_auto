@@ -150,18 +150,61 @@ class SunoClient:
             md.setdefault("web_client_pathname", "/create")
         return body
 
-    def _post_generate(self, body: dict) -> list[str]:
-        if not self.bridge:
-            raise SunoError("bridge required for generate")
+    def _post_generate_raw(self, body: dict) -> tuple[int, bytes]:
         url = self._url("generate")
         auth = self.s.headers.get("Authorization") or ""
-        status, _hdrs, resp = self.bridge.fetch(
+        status, _hdrs, resp = self.bridge.fetch(  # type: ignore[union-attr]
             url,
             method="POST",
             headers={"Content-Type": "application/json", "Authorization": auth},
             body=json.dumps(body),
             timeout=60,
         )
+        return status, resp
+
+    def _post_generate(self, body: dict) -> list[str]:
+        if not self.bridge:
+            raise SunoError("bridge required for generate")
+
+        status, resp = self._post_generate_raw(body)
+
+        # 422 token_validation_failed → cached template has a stale
+        # create_session_token. Reload suno.com (which refreshes the SPA's
+        # session) and wait for a fresh template, then retry once.
+        if status == 422 and b"token_validation" in resp.lower():
+            import sys as _sys
+            print(
+                "\n[suno] 422 token_validation_failed — session token in the "
+                "cached template has expired.",
+                file=_sys.stderr,
+            )
+            self.bridge.clear_generate_template()
+            print("[suno] asking extension to reload suno.com tab...", file=_sys.stderr)
+            self.bridge.reload_suno_tab()
+            print(
+                "[suno] After the page reloads, click 'Create' once on suno.com "
+                "to refresh the template. Waiting...",
+                file=_sys.stderr,
+            )
+            new_tpl = self.bridge.wait_for_template(
+                timeout=float(os.environ.get("SUNO_TEMPLATE_WAIT", "300"))
+            )
+            # Rebuild body fields that depend on the template
+            new_body = json.loads(new_tpl)
+            for k in ("prompt", "tags", "gpt_description_prompt", "make_instrumental",
+                      "title", "negative_tags"):
+                if k in body:
+                    new_body[k] = body[k]
+            new_body["transaction_uuid"] = str(uuid.uuid4())
+            new_body["token"] = None
+            new_body["token_provider"] = None
+            md_old = body.get("metadata") or {}
+            md_new = new_body.setdefault("metadata", {})
+            if "create_mode" in md_old:
+                md_new["create_mode"] = md_old["create_mode"]
+                md_new.setdefault("web_client_pathname", "/create")
+            status, resp = self._post_generate_raw(new_body)
+
         if status >= 400:
             raise SunoError(
                 f"generate failed: {status} {resp[:500].decode(errors='replace')}"

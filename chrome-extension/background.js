@@ -301,6 +301,24 @@ async function handleCommand(msg) {
         age_ms:   s.generateTemplateAt ? Date.now() - s.generateTemplateAt : null,
       });
     }
+    if (msg.cmd === "clearGenerateTemplate") {
+      await chrome.storage.local.remove(
+        ["generateTemplate", "generateTemplateAt"]
+      ).catch(() => {});
+      notify("generate template cleared (please refresh suno.com + click Create)");
+      return reply({ ok: true });
+    }
+    if (msg.cmd === "reloadSunoTab") {
+      const tab = await findSunoTab();
+      if (!tab) return reply({ ok: false, error: "no suno.com tab open" });
+      try {
+        await chrome.tabs.reload(tab.id);
+        notify("reloaded suno.com tab");
+        return reply({ ok: true });
+      } catch (e) {
+        return reply({ ok: false, error: String(e) });
+      }
+    }
     if (msg.cmd === "fetch") {
       const result = await proxyFetch(msg);
       return reply(result);
