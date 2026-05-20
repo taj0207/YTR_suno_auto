@@ -101,9 +101,13 @@ chrome.webRequest.onBeforeRequest.addListener(
     );
     console.log("  body:", bodySample);
 
-    // Save the generate body as a template the pipeline can reuse
+    // Save the generate body as a template the pipeline can reuse.
+    // Use storage.local (persists across reloads & restarts) — the template
+    // mostly only depends on user_tier (per-account) which doesn't change.
+    // create_session_token does drift but Suno seems to accept the prior one
+    // for a while; if it stops working, click Create once to refresh.
     if (/\/api\/generate\/v2-web\/?(\?|$)/i.test(details.url) && bodySample) {
-      chrome.storage.session.set({
+      chrome.storage.local.set({
         generateTemplate: bodySample,
         generateTemplateAt: Date.now(),
       }).catch(() => {});
@@ -281,7 +285,7 @@ async function handleCommand(msg) {
       });
     }
     if (msg.cmd === "getGenerateTemplate") {
-      const s = await chrome.storage.session.get(
+      const s = await chrome.storage.local.get(
         ["generateTemplate", "generateTemplateAt"]
       ).catch(() => ({}));
       return reply({
