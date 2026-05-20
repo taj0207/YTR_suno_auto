@@ -21,9 +21,30 @@ const RECONNECT_MS = 1500;
 let ws = null;
 let reconnectTimer = null;
 
-let bearer = null;
-let apiBase = null;
-let bearerCapturedAt = 0;
+// Auth lives in chrome.storage.session — MV3 service workers are killed
+// after ~30s idle and module-level state is LOST on restart, so we cannot
+// keep `bearer` in a plain variable. session storage persists across SW
+// restarts but is wiped when Chrome closes. That's fine: user reopens
+// suno.com on next session and the listener captures a fresh Bearer.
+
+async function saveAuth(bearerVal, apiBaseVal) {
+  await chrome.storage.session.set({
+    bearer: bearerVal,
+    apiBase: apiBaseVal,
+    bearerCapturedAt: Date.now(),
+  }).catch(() => {});
+}
+
+async function loadAuth() {
+  const s = await chrome.storage.session.get(
+    ["bearer", "apiBase", "bearerCapturedAt"]
+  ).catch(() => ({}));
+  return {
+    bearer:           s.bearer || null,
+    apiBase:          s.apiBase || null,
+    bearerCapturedAt: s.bearerCapturedAt || 0,
+  };
+}
 
 function setBadge(text, color) {
   chrome.action.setBadgeText({ text }).catch(() => {});
@@ -38,22 +59,16 @@ chrome.webRequest.onBeforeSendHeaders.addListener(
       (h) => h.name.toLowerCase() === "authorization"
     );
     if (!auth || !/^Bearer\s+/i.test(auth.value || "")) {
-      // Helps debug: log every observed Suno request even without a Bearer
-      // so we can see what hosts we're seeing.
       console.debug("[ytr-bridge] saw suno req (no Bearer):", details.method, details.url);
       return;
     }
-    bearer = auth.value;
-    bearerCapturedAt = Date.now();
-    // apiBase = scheme://host/api  (everything up to and including /api)
     const m = details.url.match(/^(https?:\/\/[^/]+\/api)\b/i);
-    if (m) apiBase = m[1];
+    const ab = m ? m[1] : null;
+    saveAuth(auth.value, ab);
     setBadge("✓", "#16A34A");
-    console.log("[ytr-bridge] captured Bearer for", apiBase, "from", details.url);
+    console.log("[ytr-bridge] captured Bearer for", ab, "from", details.url);
   },
   {
-    // Catch every suno.* host — webRequest only matches the filter, so making
-    // it broad costs nothing and avoids missing endpoints we didn't know about.
     urls: [
       "https://*.suno.com/*",
       "https://*.suno.ai/*",
@@ -222,12 +237,14 @@ async function handleCommand(msg) {
   const reply = (data) => send(Object.assign({ id: msg.id }, data));
   try {
     if (msg.cmd === "ping") return reply({ ok: true });
-    if (msg.cmd === "getAuth")
+    if (msg.cmd === "getAuth") {
+      const s = await loadAuth();
       return reply({
-        bearer,
-        apiBase,
-        age_ms: bearer ? Date.now() - bearerCapturedAt : null,
+        bearer:  s.bearer,
+        apiBase: s.apiBase,
+        age_ms:  s.bearer ? Date.now() - s.bearerCapturedAt : null,
       });
+    }
     if (msg.cmd === "fetch") {
       const result = await proxyFetch(msg);
       return reply(result);
@@ -252,10 +269,10 @@ function connect() {
     scheduleReconnect();
     return;
   }
-  ws.onopen = () => {
+  ws.onopen = async () => {
     console.log("[ytr-bridge] connected to bridge");
-    setBadge(bearer ? "✓" : "·", bearer ? "#16A34A" : "#2563EB");
-    if (bearer) send({ method: "auth", bearer, apiBase });
+    const s = await loadAuth();
+    setBadge(s.bearer ? "✓" : "·", s.bearer ? "#16A34A" : "#2563EB");
   };
   ws.onmessage = (e) => {
     let msg;
