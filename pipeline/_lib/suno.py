@@ -26,6 +26,9 @@ from . import suno_bridge
 # === Endpoint paths (relative to apiBase) ==================================
 PATHS = {
     "generate":          "/generate/v2-web/",        # observed 2026-05-20
+    "playlist_create":   "/playlist/create/",        # observed — body: {"name":...}
+    "playlist_meta":     "/playlist/set_metadata",   # observed — {playlist_id,name,description}
+    "playlist_update":   "/playlist/update_clips/",  # observed — add/remove clips
     "feed_by_ids_post":  "/feed/v3",                 # POST {ids:[...]}
     "feed_by_ids_get":   "/feed/v3",                 # GET  ?ids=X&page=0
     "clip":              "/clip/{id}",
@@ -218,6 +221,75 @@ class SunoClient:
         if not clips:
             raise SunoError(f"no clips in response: {str(data)[:500]}")
         return [c["id"] for c in clips]
+
+    # --- playlists (observed 2026-05-20) -----------------------------------
+
+    def _post_json(self, key: str, payload: dict, *, timeout: float = 30) -> dict:
+        """Helper: POST JSON via bridge, return parsed JSON response."""
+        if not self.bridge:
+            raise SunoError("bridge required")
+        url = self._url(key)
+        auth = self.s.headers.get("Authorization") or ""
+        status, _hdrs, resp = self.bridge.fetch(
+            url, method="POST",
+            headers={"Content-Type": "application/json", "Authorization": auth},
+            body=json.dumps(payload), timeout=timeout,
+        )
+        if status >= 400:
+            raise SunoError(f"{key} failed: {status} {resp[:300].decode(errors='replace')}")
+        if not resp:
+            return {}
+        try:
+            return json.loads(resp)
+        except Exception:
+            return {}
+
+    def create_playlist(self, name: str, description: str = "") -> str:
+        """Create a playlist; return its uuid. Optionally sets description."""
+        data = self._post_json("playlist_create", {"name": name})
+        # Response shape (best guess): {"id": "<uuid>", ...} or {"playlist": {"id":...}}
+        playlist_id = None
+        if isinstance(data, dict):
+            playlist_id = data.get("id") or data.get("playlist_id")
+            if not playlist_id and isinstance(data.get("playlist"), dict):
+                playlist_id = data["playlist"].get("id")
+        if not playlist_id:
+            raise SunoError(f"playlist create returned no id: {str(data)[:300]}")
+        if description:
+            try:
+                self.set_playlist_metadata(playlist_id, name=name, description=description)
+            except Exception:  # noqa: BLE001
+                pass
+        return playlist_id
+
+    def set_playlist_metadata(self, playlist_id: str, *, name: str | None = None,
+                              description: str | None = None) -> None:
+        payload: dict = {"playlist_id": playlist_id}
+        if name is not None:
+            payload["name"] = name
+        if description is not None:
+            payload["description"] = description
+        self._post_json("playlist_meta", payload)
+
+    def add_to_playlist(self, playlist_id: str, clip_ids: list[str]) -> None:
+        if not clip_ids:
+            return
+        self._post_json("playlist_update", {
+            "playlist_id":   playlist_id,
+            "update_type":   "add",
+            "metadata":      {"clip_ids": list(clip_ids)},
+            "recommendation_metadata": {},
+        })
+
+    def remove_from_playlist(self, playlist_id: str, clip_ids: list[str]) -> None:
+        if not clip_ids:
+            return
+        self._post_json("playlist_update", {
+            "playlist_id":   playlist_id,
+            "update_type":   "remove",
+            "metadata":      {"clip_ids": list(clip_ids)},
+            "recommendation_metadata": {},
+        })
 
     # --- feed / status ------------------------------------------------------
 

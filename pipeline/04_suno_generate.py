@@ -117,8 +117,10 @@ def main() -> int:
             "job": job,
             "workspace": args.workspace,
             "created_at": dt.datetime.now().astimezone().isoformat(),
+            "playlist_id": None,
             "tracks": [],
         }
+    gen_log.setdefault("playlist_id", None)
     existing_ids = {t["song_id"] for t in gen_log["tracks"]}
 
     pending = []
@@ -184,6 +186,22 @@ def main() -> int:
         print(f"[warn] previous job didn't complete within {job_wait_max_s:.0f}s, proceeding anyway")
 
     with suno.session(headless=True) as client:
+        # Create (or reuse) the Suno playlist for this job
+        if not gen_log.get("playlist_id") and os.environ.get("SUNO_NO_PLAYLIST") != "1":
+            playlist_name = f"YTR {job}"
+            try:
+                pid = client.create_playlist(
+                    playlist_name,
+                    description=f"YTR_suno_auto batch — workspace {args.workspace}, "
+                                f"batch {args.batch}, mode {args.mode}",
+                )
+                gen_log["playlist_id"] = pid
+                log_path.write_text(json.dumps(gen_log, ensure_ascii=False, indent=2),
+                                    encoding="utf-8")
+                print(f"[plst] created Suno playlist '{playlist_name}' id={pid}")
+            except Exception as e:  # noqa: BLE001
+                print(f"[plst] could not create playlist: {e}", file=sys.stderr)
+
         for idx, (song, prompt_path, prompt_text, prompt_hash) in enumerate(pending):
             if in_flight:
                 wait_for_jobs(in_flight)
@@ -210,6 +228,15 @@ def main() -> int:
                 print(f"[ok  ] {song}: song_ids={song_ids}")
                 in_flight = list(song_ids)
                 now = dt.datetime.now().astimezone().isoformat()
+
+                # Add the new clips to this job's Suno playlist
+                pid = gen_log.get("playlist_id")
+                if pid:
+                    try:
+                        client.add_to_playlist(pid, song_ids)
+                        print(f"[plst] added {len(song_ids)} clip(s) to playlist {pid}")
+                    except Exception as e:  # noqa: BLE001
+                        print(f"[plst] add_to_playlist failed: {e}", file=sys.stderr)
 
                 # Append to suno_submissions ledger
                 dedup.append_jsonl(paths.SUNO_SUBMISSIONS, {
