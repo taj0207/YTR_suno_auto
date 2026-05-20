@@ -94,6 +94,11 @@ class SunoBridge:
                     msg = json.loads(raw)
                 except Exception:
                     continue
+                # Free-form events the extension pushes for visibility
+                if msg.get("type") == "event":
+                    import sys as _sys
+                    print(f"[ext] {msg.get('text', '')}", file=_sys.stderr)
+                    continue
                 if isinstance(msg.get("id"), int) and msg["id"] in self._pending:
                     fut = self._pending.pop(msg["id"])
                     if not fut.done():

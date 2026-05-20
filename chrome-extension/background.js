@@ -67,6 +67,7 @@ chrome.webRequest.onBeforeSendHeaders.addListener(
     saveAuth(auth.value, ab);
     setBadge("✓", "#16A34A");
     console.log("[ytr-bridge] captured Bearer for", ab, "from", details.url);
+    notify(`Bearer captured (apiBase=${ab})`);
   },
   {
     urls: [
@@ -112,6 +113,7 @@ chrome.webRequest.onBeforeRequest.addListener(
         generateTemplateAt: Date.now(),
       }).catch(() => {});
       console.log("[ytr-bridge] saved generate template");
+      notify(`generate template saved (${bodySample.length} bytes)`);
     }
   },
   { urls: ["https://*.suno.com/api/*", "https://*.suno.ai/api/*"] },
@@ -129,6 +131,12 @@ function send(obj) {
     console.warn("[ytr-bridge] send failed:", err);
     return false;
   }
+}
+
+// Push a free-form event to the pipeline so the user can see what the
+// extension is doing without opening DevTools on the service worker.
+function notify(text) {
+  send({ type: "event", text: String(text) });
 }
 
 async function findSunoTab() {
@@ -321,6 +329,11 @@ function connect() {
     console.log("[ytr-bridge] connected to bridge");
     const s = await loadAuth();
     setBadge(s.bearer ? "✓" : "·", s.bearer ? "#16A34A" : "#2563EB");
+    const tpl = await chrome.storage.local.get(["generateTemplate"]).catch(() => ({}));
+    notify(
+      `extension connected — Bearer=${s.bearer ? "yes" : "no"}, ` +
+      `template=${tpl.generateTemplate ? "yes" : "no"}`
+    );
   };
   ws.onmessage = (e) => {
     let msg;
