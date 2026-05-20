@@ -37,19 +37,28 @@ chrome.webRequest.onBeforeSendHeaders.addListener(
     const auth = (details.requestHeaders || []).find(
       (h) => h.name.toLowerCase() === "authorization"
     );
-    if (!auth || !/^Bearer\s+/i.test(auth.value || "")) return;
+    if (!auth || !/^Bearer\s+/i.test(auth.value || "")) {
+      // Helps debug: log every observed Suno request even without a Bearer
+      // so we can see what hosts we're seeing.
+      console.debug("[ytr-bridge] saw suno req (no Bearer):", details.method, details.url);
+      return;
+    }
     bearer = auth.value;
     bearerCapturedAt = Date.now();
-    const m = details.url.match(/^(https?:\/\/[^/]+\/api)/i);
+    // apiBase = scheme://host/api  (everything up to and including /api)
+    const m = details.url.match(/^(https?:\/\/[^/]+\/api)\b/i);
     if (m) apiBase = m[1];
     setBadge("✓", "#16A34A");
-    console.log("[ytr-bridge] captured Bearer for", apiBase);
+    console.log("[ytr-bridge] captured Bearer for", apiBase, "from", details.url);
   },
   {
+    // Catch every suno.* host — webRequest only matches the filter, so making
+    // it broad costs nothing and avoids missing endpoints we didn't know about.
     urls: [
-      "https://studio-api.prod.suno.com/api/*",
-      "https://studio-api.suno.com/api/*",
-      "https://studio-api.suno.ai/api/*",
+      "https://*.suno.com/*",
+      "https://*.suno.ai/*",
+      "https://suno.com/*",
+      "https://suno.ai/*",
     ],
   },
   ["requestHeaders", "extraHeaders"]
