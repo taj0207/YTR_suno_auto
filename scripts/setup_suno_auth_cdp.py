@@ -118,49 +118,59 @@ def main() -> int:
         print("playwright not installed.", file=sys.stderr)
         return 2
 
+    print("[step] connecting to Chrome over CDP...")
     with sync_playwright() as pw:
         browser = pw.chromium.connect_over_cdp(CDP_BASE)
+        print(f"[ok ] connected. contexts={len(browser.contexts)}")
         if not browser.contexts:
             print("[fail] no contexts in connected Chrome", file=sys.stderr)
             return 1
         ctx = browser.contexts[0]
+        print(f"[ok ] using first context. pages={len(ctx.pages)}")
+        for i, p in enumerate(ctx.pages):
+            try:
+                print(f"        tab {i}: {p.url[:90]}")
+            except Exception:
+                pass
 
-        # Find or create a Suno tab in the user's Chrome
-        suno_page = None
-        for p in ctx.pages:
-            if "suno.com" in p.url:
-                suno_page = p
-                break
-        if suno_page is None:
-            suno_page = ctx.new_page()
-            suno_page.goto("https://suno.com/", wait_until="domcontentloaded")
-        try:
-            suno_page.bring_to_front()
-        except Exception:
-            pass
-
+        print()
         print("=" * 70)
-        print("In the Chrome window:")
-        print("  - Make sure you're logged in to Suno (any method — your real")
-        print("    Google account works here because this is your real Chrome).")
-        print(f"  - Confirm the URL is suno.com (not a sign-in page).")
-        print("Then return here and press Enter to save the session.")
+        print("In the Chrome window that opened:")
+        print()
+        print("  1. Type / paste this URL into the address bar yourself:")
+        print("       https://suno.com/create")
+        print()
+        print("  2. If not logged in, sign in (any method — Google, Email,")
+        print("     Discord, whatever works for you).")
+        print()
+        print("  3. Confirm the address bar shows suno.com/create (not /sign-in).")
+        print()
+        print("Then come back here and press Enter to save the session.")
         print("=" * 70)
         try:
             input()
         except EOFError:
             pass
 
-        # Validate logged in
-        suno_page.goto("https://suno.com/create", wait_until="domcontentloaded")
-        if "sign-in" in suno_page.url or "login" in suno_page.url:
-            print(f"Looks like login didn't complete (page is at {suno_page.url}).",
-                  file=sys.stderr)
+        # Find the suno tab to validate URL
+        print("[step] checking Suno tab(s)...")
+        suno_pages = [p for p in ctx.pages if "suno.com" in (p.url or "")]
+        if not suno_pages:
+            print("[fail] no suno.com tab found in Chrome.", file=sys.stderr)
+            print("       Open suno.com in the Chrome window first.", file=sys.stderr)
+            return 1
+        target = suno_pages[-1]
+        url = target.url
+        print(f"[ok ] suno tab url: {url}")
+        if "sign-in" in url or "login" in url:
+            print(f"[fail] still on a sign-in page ({url}).", file=sys.stderr)
+            print("       Finish login in Chrome, then re-run this script.", file=sys.stderr)
             return 1
 
         state_path.parent.mkdir(parents=True, exist_ok=True)
+        print("[step] writing storage_state...")
         ctx.storage_state(path=str(state_path))
-        print(f"saved storage_state -> {state_path}")
+        print(f"[ok ] saved storage_state -> {state_path}")
 
     print()
     print("You can keep Chrome open. The pipeline (Step 4/5) only needs the")
