@@ -101,11 +101,6 @@ chrome.webRequest.onBeforeRequest.addListener(
       details.url
     );
     console.log("  body:", bodySample);
-    // Also push to the pipeline so the user doesn't need SW DevTools.
-    // Truncate body to 1500 chars to keep terminal output readable while
-    // still showing enough for playlist / generate inspection.
-    const shortBody = bodySample.length > 1500 ? bodySample.slice(0, 1500) + "…(truncated)" : bodySample;
-    notify(`SUNO ${details.method} ${details.url}\n  body: ${shortBody}`);
 
     // Save the generate body as a template the pipeline can reuse.
     // Use storage.local (persists across reloads & restarts) — the template
