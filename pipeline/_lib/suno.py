@@ -118,13 +118,12 @@ class SunoClient:
                        description: str = "", mv: str | None = None) -> dict:
         if not self.bridge:
             raise SunoError("bridge required for generate")
-        tpl = self.bridge.get_generate_template()
-        if not tpl:
-            raise SunoError(
-                "no generate template captured. Click 'Create' once on "
-                "suno.com (any prompt) so the extension records the request "
-                "shape, then re-run."
+        try:
+            tpl = self.bridge.wait_for_template(
+                timeout=float(os.environ.get("SUNO_TEMPLATE_WAIT", "180"))
             )
+        except Exception as e:
+            raise SunoError(str(e)) from e
         body = json.loads(tpl)
         body["transaction_uuid"] = str(uuid.uuid4())
         body["token"] = None

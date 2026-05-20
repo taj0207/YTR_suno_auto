@@ -47,6 +47,10 @@ class SunoBridge:
         self._next_id = 1
         self._started = threading.Event()
         self._connected = threading.Event()
+        # Signals fired when matching extension events arrive — pipeline can
+        # block on these instead of polling.
+        self._template_event = threading.Event()
+        self._bearer_event = threading.Event()
 
     # --- lifecycle ----------------------------------------------------------
 
@@ -97,7 +101,13 @@ class SunoBridge:
                 # Free-form events the extension pushes for visibility
                 if msg.get("type") == "event":
                     import sys as _sys
-                    print(f"[ext] {msg.get('text', '')}", file=_sys.stderr)
+                    text = msg.get("text", "")
+                    print(f"[ext] {text}", file=_sys.stderr)
+                    low = text.lower()
+                    if "template saved" in low:
+                        self._template_event.set()
+                    if "bearer captured" in low:
+                        self._bearer_event.set()
                     continue
                 if isinstance(msg.get("id"), int) and msg["id"] in self._pending:
                     fut = self._pending.pop(msg["id"])
@@ -190,6 +200,29 @@ class SunoBridge:
         except SunoBridgeError:
             return None
         return r.get("template")
+
+    def wait_for_template(self, timeout: float = 180) -> str:
+        """Return a template — block until extension captures one if needed."""
+        tpl = self.get_generate_template()
+        if tpl:
+            return tpl
+        import sys as _sys
+        print(
+            f"\n[bridge] no generate template captured yet.\n"
+            f"         → open https://suno.com/create in your Chrome and click\n"
+            f"           'Create' once (any prompt). The extension will capture\n"
+            f"           the request shape; this script will pick up automatically.\n"
+            f"         (waiting up to {int(timeout)}s)",
+            file=_sys.stderr,
+        )
+        self._template_event.clear()
+        if self._template_event.wait(timeout=timeout):
+            tpl = self.get_generate_template()
+            if tpl:
+                return tpl
+        raise SunoBridgeError(
+            "template still missing. Click 'Create' on suno.com once, then re-run."
+        )
 
     def fetch(
         self,
