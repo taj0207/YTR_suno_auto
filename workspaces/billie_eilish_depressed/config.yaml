@@ -17,6 +17,11 @@ style_summary: >
 # Which prompt template to use by default when running Step 3
 default_prompt_variant: "3_2"   # "3_1" (lyrics-first) or "3_2" (requirements-first)
 
+# Suno playlist auto-creation (Step 4). Templates support {placeholders}:
+#   {date} {batch} {workspace} {display_name} {mode} {job}
+playlist_name_template:        "YTR {display_name} · {date}"
+playlist_description_template: "YTR_suno_auto · workspace={workspace} · mode={mode} · batch={batch}"
+
 # Used by Step 6 (YouTube description)
 youtube:
   album_name_hint: "Depressed Billie Eilish style album"

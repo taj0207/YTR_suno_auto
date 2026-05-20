@@ -188,13 +188,28 @@ def main() -> int:
     with suno.session(headless=True) as client:
         # Create (or reuse) the Suno playlist for this job
         if not gen_log.get("playlist_id") and os.environ.get("SUNO_NO_PLAYLIST") != "1":
-            playlist_name = f"YTR {job}"
+            tpl_ctx = {
+                "date":         dt.date.today().isoformat(),
+                "batch":        args.batch,
+                "workspace":    args.workspace,
+                "display_name": ws.config.get("display_name", args.workspace),
+                "mode":         args.mode,
+                "job":          job,
+            }
+            name_tpl = ws.config.get("playlist_name_template", "YTR {job}")
+            desc_tpl = ws.config.get(
+                "playlist_description_template",
+                "YTR_suno_auto batch — workspace {workspace}, batch {batch}, mode {mode}",
+            )
             try:
-                pid = client.create_playlist(
-                    playlist_name,
-                    description=f"YTR_suno_auto batch — workspace {args.workspace}, "
-                                f"batch {args.batch}, mode {args.mode}",
-                )
+                playlist_name = name_tpl.format(**tpl_ctx)
+                playlist_desc = desc_tpl.format(**tpl_ctx)
+            except KeyError as e:
+                print(f"[plst] template error ({e}) — falling back to default name", file=sys.stderr)
+                playlist_name = f"YTR {job}"
+                playlist_desc = f"YTR_suno_auto batch — workspace {args.workspace}"
+            try:
+                pid = client.create_playlist(playlist_name, description=playlist_desc)
                 gen_log["playlist_id"] = pid
                 log_path.write_text(json.dumps(gen_log, ensure_ascii=False, indent=2),
                                     encoding="utf-8")
