@@ -12,8 +12,10 @@ a download tool), so it's a best-guess; verify with DevTools if Step 4 404s.
 """
 from __future__ import annotations
 
+import json
 import os
 import time
+import uuid
 from contextlib import contextmanager
 from typing import Iterator
 
@@ -23,7 +25,7 @@ from . import suno_bridge
 
 # === Endpoint paths (relative to apiBase) ==================================
 PATHS = {
-    "generate":          "/generate/v2/",            # NOT observed — verify if 404
+    "generate":          "/generate/v2-web/",        # observed 2026-05-20
     "feed_by_ids_post":  "/feed/v3",                 # POST {ids:[...]}
     "feed_by_ids_get":   "/feed/v3",                 # GET  ?ids=X&page=0
     "clip":              "/clip/{id}",
@@ -92,35 +94,83 @@ class SunoClient:
         return self.api_base + PATHS[key].format(**kw)
 
     # --- generation ---------------------------------------------------------
+    #
+    # Suno's generate endpoint is /api/generate/v2-web/. The body has
+    # session-specific fields (user_tier, create_session_token, mv, …) we
+    # can't derive from outside. Strategy: the extension captures the user's
+    # most recent manual Create POST body and stores it as a TEMPLATE. We
+    # load the template, substitute only the per-request fields
+    # (prompt, tags, mode, transaction_uuid), and POST via the bridge so the
+    # request runs inside the user's suno.com tab (same-origin cookies +
+    # Bearer attach).
 
     def submit_vocal(self, *, lyrics: str, styles: str, wid: str | None = None,
-                     mv: str = DEFAULT_MV) -> list[str]:
-        payload: dict = {
-            "prompt": lyrics,
-            "tags": styles,
-            "make_instrumental": False,
-            "mv": mv,
-        }
-        if wid:
-            payload["workspace_id"] = wid
-        return self._post_generate(payload)
+                     mv: str | None = None) -> list[str]:
+        body = self._build_payload(mode="vocal", prompt=lyrics, tags=styles, mv=mv)
+        return self._post_generate(body)
 
     def submit_instrumental(self, *, description: str, wid: str | None = None,
-                            mv: str = DEFAULT_MV) -> list[str]:
-        payload: dict = {
-            "gpt_description_prompt": description,
-            "make_instrumental": True,
-            "mv": mv,
-        }
-        if wid:
-            payload["workspace_id"] = wid
-        return self._post_generate(payload)
+                            mv: str | None = None) -> list[str]:
+        body = self._build_payload(mode="instrumental", description=description, mv=mv)
+        return self._post_generate(body)
 
-    def _post_generate(self, payload: dict) -> list[str]:
-        r = self.s.post(self._url("generate"), json=payload, timeout=30)
-        if not r.ok:
-            raise SunoError(f"generate failed: {r.status_code} {r.text[:500]}")
-        data = r.json()
+    def _build_payload(self, *, mode: str, prompt: str = "", tags: str = "",
+                       description: str = "", mv: str | None = None) -> dict:
+        if not self.bridge:
+            raise SunoError("bridge required for generate")
+        tpl = self.bridge.get_generate_template()
+        if not tpl:
+            raise SunoError(
+                "no generate template captured. Click 'Create' once on "
+                "suno.com (any prompt) so the extension records the request "
+                "shape, then re-run."
+            )
+        body = json.loads(tpl)
+        body["transaction_uuid"] = str(uuid.uuid4())
+        body["token"] = None
+        body["token_provider"] = None
+        if mv:
+            body["mv"] = mv
+        if mode == "vocal":
+            body["prompt"] = prompt
+            body["tags"] = tags
+            body["gpt_description_prompt"] = ""
+            body["make_instrumental"] = False
+            body.setdefault("title", "")
+            body.setdefault("negative_tags", "")
+            md = body.setdefault("metadata", {})
+            md["create_mode"] = "custom"
+            md.setdefault("web_client_pathname", "/create")
+        else:  # instrumental
+            body["prompt"] = ""
+            body["gpt_description_prompt"] = description
+            body["tags"] = tags or ""
+            body["make_instrumental"] = True
+            md = body.setdefault("metadata", {})
+            md["create_mode"] = "simple"
+            md.setdefault("web_client_pathname", "/create")
+        return body
+
+    def _post_generate(self, body: dict) -> list[str]:
+        if not self.bridge:
+            raise SunoError("bridge required for generate")
+        url = self._url("generate")
+        auth = self.s.headers.get("Authorization") or ""
+        status, _hdrs, resp = self.bridge.fetch(
+            url,
+            method="POST",
+            headers={"Content-Type": "application/json", "Authorization": auth},
+            body=json.dumps(body),
+            timeout=60,
+        )
+        if status >= 400:
+            raise SunoError(
+                f"generate failed: {status} {resp[:500].decode(errors='replace')}"
+            )
+        try:
+            data = json.loads(resp)
+        except Exception as e:
+            raise SunoError(f"generate returned non-JSON: {resp[:300]!r}") from e
         clips = data.get("clips") if isinstance(data, dict) else data
         if not clips:
             raise SunoError(f"no clips in response: {str(data)[:500]}")

@@ -179,6 +179,13 @@ class SunoBridge:
         return Auth(bearer=bearer, api_base=api_base,
                     age_ms=int(r.get("age_ms") or 0))
 
+    def get_generate_template(self) -> str | None:
+        try:
+            r = self._send({"cmd": "getGenerateTemplate"}, timeout=10)
+        except SunoBridgeError:
+            return None
+        return r.get("template")
+
     def fetch(
         self,
         url: str,

@@ -84,15 +84,12 @@ chrome.webRequest.onBeforeSendHeaders.addListener(
 chrome.webRequest.onBeforeRequest.addListener(
   (details) => {
     if (details.method !== "POST") return;
-    // Only show the high-signal endpoints — drop analytics/event spam
     if (!/\/api\/(generate|c\/check|prompts)/i.test(details.url)) return;
     let bodySample = "";
     try {
       const rb = details.requestBody;
       if (rb?.raw && rb.raw[0]?.bytes) {
-        const txt = new TextDecoder().decode(rb.raw[0].bytes);
-        // Full body — generate payload can be a few KB
-        bodySample = txt;
+        bodySample = new TextDecoder().decode(rb.raw[0].bytes);
       } else if (rb?.formData) {
         bodySample = JSON.stringify(rb.formData);
       }
@@ -103,6 +100,15 @@ chrome.webRequest.onBeforeRequest.addListener(
       details.url
     );
     console.log("  body:", bodySample);
+
+    // Save the generate body as a template the pipeline can reuse
+    if (/\/api\/generate\/v2-web\/?(\?|$)/i.test(details.url) && bodySample) {
+      chrome.storage.session.set({
+        generateTemplate: bodySample,
+        generateTemplateAt: Date.now(),
+      }).catch(() => {});
+      console.log("[ytr-bridge] saved generate template");
+    }
   },
   { urls: ["https://*.suno.com/api/*", "https://*.suno.ai/api/*"] },
   ["requestBody"]
@@ -272,6 +278,15 @@ async function handleCommand(msg) {
         bearer:  s.bearer,
         apiBase: s.apiBase,
         age_ms:  s.bearer ? Date.now() - s.bearerCapturedAt : null,
+      });
+    }
+    if (msg.cmd === "getGenerateTemplate") {
+      const s = await chrome.storage.session.get(
+        ["generateTemplate", "generateTemplateAt"]
+      ).catch(() => ({}));
+      return reply({
+        template: s.generateTemplate || null,
+        age_ms:   s.generateTemplateAt ? Date.now() - s.generateTemplateAt : null,
       });
     }
     if (msg.cmd === "fetch") {
