@@ -365,10 +365,20 @@ def _find_any_url(obj) -> str | None:
     return None
 
 
+_DONE_STATUSES = {"complete", "complete_clean", "streamed", "streaming", "finished"}
+_FAILED_STATUSES = {"error", "failed", "cancelled", "canceled"}
+
+
 def is_complete(clip: dict) -> bool:
+    """A clip whose audio is playable. Suno's `streaming` state means the
+    audio is already deliverable — the job is no longer 'running' for the
+    purposes of the concurrency cap."""
     s = (clip.get("status") or "").lower()
-    return s in {"complete", "streamed", "finished"}
+    if s in _DONE_STATUSES:
+        return True
+    # Belt-and-braces: if audio_url is set, the song exists no matter the label.
+    return bool(clip.get("audio_url"))
 
 
 def is_failed(clip: dict) -> bool:
-    return (clip.get("status") or "").lower() in {"error", "failed"}
+    return (clip.get("status") or "").lower() in _FAILED_STATUSES

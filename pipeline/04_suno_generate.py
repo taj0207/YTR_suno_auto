@@ -164,9 +164,20 @@ def main() -> int:
                 print(f"        feed poll error: {e}")
                 time.sleep(job_poll_s)
                 continue
-            statuses = [(c.get("id"), (c.get("status") or "").lower()) for c in clips]
-            done = sum(1 for _, s in statuses if s in {"complete", "streamed", "finished", "error", "failed"})
-            print(f"        {done}/{len(ids)} done — {[s for _, s in statuses]}")
+            # Only count the clips we actually asked about.
+            byid = {c.get("id"): c for c in clips if c.get("id") in set(ids)}
+            done = 0
+            shown = []
+            for sid in ids:
+                c = byid.get(sid)
+                if c is None:
+                    shown.append("missing")
+                    continue
+                s = (c.get("status") or "").lower()
+                shown.append(s or "?")
+                if suno.is_complete(c) or suno.is_failed(c):
+                    done += 1
+            print(f"        {done}/{len(ids)} done — {shown}")
             if done >= len(ids):
                 return
             time.sleep(job_poll_s)
