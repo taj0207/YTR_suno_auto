@@ -147,11 +147,37 @@ def main() -> int:
         return 0
 
     n_ok = n_fail = 0
-    submit_delay_s = float(os.environ.get("SUNO_SUBMIT_DELAY_S", "8"))
+    submit_delay_s = float(os.environ.get("SUNO_SUBMIT_DELAY_S", "5"))
+    job_wait_max_s = float(os.environ.get("SUNO_JOB_WAIT_MAX_S", "300"))
+    job_poll_s = float(os.environ.get("SUNO_JOB_POLL_S", "10"))
+    in_flight: list[str] = []  # song_ids from the most recent submission
+
+    def wait_for_jobs(ids: list[str]) -> None:
+        if not ids:
+            return
+        print(f"[wait] for previous {len(ids)} variant(s) to finish (Suno 限制不允許並行) — polling /feed/v3...")
+        deadline = time.monotonic() + job_wait_max_s
+        while time.monotonic() < deadline:
+            try:
+                clips = client.fetch_feed(ids)
+            except Exception as e:  # noqa: BLE001
+                print(f"        feed poll error: {e}")
+                time.sleep(job_poll_s)
+                continue
+            statuses = [(c.get("id"), (c.get("status") or "").lower()) for c in clips]
+            done = sum(1 for _, s in statuses if s in {"complete", "streamed", "finished", "error", "failed"})
+            print(f"        {done}/{len(ids)} done — {[s for _, s in statuses]}")
+            if done >= len(ids):
+                return
+            time.sleep(job_poll_s)
+        print(f"[warn] previous job didn't complete within {job_wait_max_s:.0f}s, proceeding anyway")
+
     with suno.session(headless=True) as client:
         for idx, (song, prompt_path, prompt_text, prompt_hash) in enumerate(pending):
-            if idx > 0 and submit_delay_s > 0:
-                print(f"[wait] {submit_delay_s:.0f}s between submissions to avoid rate-limit...")
+            if in_flight:
+                wait_for_jobs(in_flight)
+                in_flight = []
+            elif idx > 0 and submit_delay_s > 0:
                 time.sleep(submit_delay_s)
             try:
                 if args.mode == "vocal":
@@ -171,6 +197,7 @@ def main() -> int:
                     song_ids = client.submit_instrumental(description=description, wid=ws.wid)
 
                 print(f"[ok  ] {song}: song_ids={song_ids}")
+                in_flight = list(song_ids)
                 now = dt.datetime.now().astimezone().isoformat()
 
                 # Append to suno_submissions ledger
