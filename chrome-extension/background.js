@@ -135,27 +135,77 @@ async function tabMainWorldFetch(tab, args) {
   return result;
 }
 
+function utf8B64(s) {
+  // proper UTF-8 → base64 (string from MAIN world can contain Chinese)
+  return btoa(unescape(encodeURIComponent(s || "")));
+}
+
+function waitForTabLoad(tabId, timeoutMs = 30000) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      chrome.tabs.onUpdated.removeListener(listener);
+      reject(new Error("tab load timeout"));
+    }, timeoutMs);
+    const listener = (id, info) => {
+      if (id !== tabId) return;
+      if (info.status === "complete") {
+        clearTimeout(timer);
+        chrome.tabs.onUpdated.removeListener(listener);
+        // Give post-load JS (e.g. WAF challenge solver) a moment to finish
+        // and the DOM to settle.
+        setTimeout(resolve, 2500);
+      }
+    };
+    chrome.tabs.onUpdated.addListener(listener);
+  });
+}
+
+// Real navigation in a background tab so WAF JS challenges actually run.
+// Disposes the tab when done.
+async function navigateTabFetch(url) {
+  const tab = await chrome.tabs.create({ url, active: false });
+  try {
+    await waitForTabLoad(tab.id, 40000);
+    const [{ result, error }] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      world: "MAIN",
+      func: () => ({
+        html: document.documentElement.outerHTML,
+        url:  location.href,
+      }),
+    });
+    if (error) throw new Error(String(error));
+    if (!result) throw new Error("executeScript returned no result");
+    return {
+      status: 200,
+      headers: { "x-final-url": result.url || "" },
+      body_b64: utf8B64(result.html),
+    };
+  } finally {
+    try { await chrome.tabs.remove(tab.id); } catch (_) {}
+  }
+}
+
 async function proxyFetch(args) {
   let host = "";
   try { host = new URL(args.url).host.toLowerCase(); } catch (_) {}
 
-  // Route through a same-origin tab whenever possible — SW cross-origin
-  // fetch loses SameSite=Lax cookies, which kills KKBox's WAF cookie.
+  // Route Suno through an existing suno.com tab (need the SPA's JWT in
+  // the same context that issued it).
   if (host.endsWith("suno.com") || host.endsWith("suno.ai")) {
     const tab = await findSunoTab();
     if (tab) return await tabMainWorldFetch(tab, args);
   }
-  if (host.endsWith("kkbox.com")) {
-    const tab = await findKkboxTab();
-    if (!tab) {
-      throw new Error(
-        "no kkbox.com tab open in this Chrome — open https://www.kkbox.com/ " +
-        "so the WAF cookie can attach to subsequent fetches"
-      );
-    }
-    return await tabMainWorldFetch(tab, args);
+
+  // KKBox: navigation in a background tab so AWS WAF challenge JS runs.
+  // fetch() from MAIN world is treated as XHR by WAF — returns 202 with
+  // empty body. Real navigation gets the actual document.
+  if (host.endsWith("kkbox.com") && (args.method || "GET").toUpperCase() === "GET") {
+    return await navigateTabFetch(args.url);
   }
-  // Other origins: try SW fetch as a generic fallback.
+
+  // Default: SW fetch (cross-origin OK with host_permissions). May still
+  // be limited if SameSite=Lax cookies are required.
   return await swFetch(args);
 }
 
