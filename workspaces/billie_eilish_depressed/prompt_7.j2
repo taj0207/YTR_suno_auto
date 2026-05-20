@@ -1,0 +1,42 @@
+{# YouTube description generator.
+   Inputs:
+     - sample_descriptions: list of 2 Suno song descriptions copied from the album
+     - tracklist_with_timestamps: list of strings like "00:00 1. Lingering Perfection"
+     - workspace_youtube: dict from config.yaml (album_name_hint, producer_credit, pr_email, hashtags)
+#}
+{% for d in sample_descriptions %}{{ d }}
+
+{% endfor %}
+{{ tracklist_with_timestamps | join("\n") }}
+
+Given the info above (two song descriptions and the playlist), create a description for an album to be released on YouTube. Use this structure:
+
+Title: <Album Title> | <Genre Tags> | <Vocal/Style Tag>
+"<One-line evocative quote that captures the mood>"
+
+<Opening paragraph: 4–6 sentences setting scene/mood. Reference the album hint: {{ workspace_youtube.album_name_hint }}.>
+
+Timestamps:
+{{ tracklist_with_timestamps | join("\n") }}
+
+The Sonic Aesthetic
+<2–3 sentence intro to the production philosophy.>
+
+The Vocals: <How the vocals are delivered, any signature effects.>
+
+The Instrumentation: <Key instrument choices and tones.>
+
+The Dynamics: <How energy moves across a typical song.>
+
+Vibe: <4–6 comma-separated mood tags>
+
+Instrumentation: <4–6 comma-separated instrument tags>
+
+Producer: {{ workspace_youtube.producer_credit }}
+
+For PR Inquiries: {{ workspace_youtube.pr_email }}{{ workspace_youtube.hashtags | join(" ") }}
+
+Rules:
+- Output only the final description, no preamble.
+- Keep it under 4500 characters total.
+- Hashtags must appear on the same line as the PR email (no newline between them), as shown.

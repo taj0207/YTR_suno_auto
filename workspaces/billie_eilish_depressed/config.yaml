@@ -1,0 +1,26 @@
+name: billie_eilish_depressed
+display_name: "Depressed Billie Eilish (Male Vocal)"
+
+suno:
+  wid: "84cca4a7-1ed8-43eb-984a-94d451900800"
+  workspace_url: "https://suno.com/create?wid=84cca4a7-1ed8-43eb-984a-94d451900800"
+
+style_summary: >
+  Depressed Billie Eilish style, English, male vocal. Catchy lines with rhyme,
+  humming for tune transitions, structured (entry/bridge/chorus/ending),
+  with tempo/harmony/instrument notes per section.
+
+# Which prompt template to use by default when running Step 3
+default_prompt_variant: "3_2"   # "3_1" (lyrics-first) or "3_2" (requirements-first)
+
+# Used by Step 6 (YouTube description)
+youtube:
+  album_name_hint: "Depressed Billie Eilish style album"
+  producer_credit: "Tibby & Lena @Shortlist Studio"
+  pr_email: "shortlist.studio.admin@gmail.com"
+  hashtags:
+    - "#BillieEilishStyle"
+    - "#DepressedPop"
+    - "#MelancholicVocals"
+    - "#MaleVocal"
+    - "#AlternativePop"

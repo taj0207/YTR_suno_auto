@@ -1,0 +1,11 @@
+# Step 1 input. Each song:
+#   name:   slug used as filename in data/lyrics/raw/{name}.txt
+#   title:  Chinese title used for KKBox search
+#   artist: (optional) if omitted, Gemini guesses from title
+songs:
+  - name: lingering_perfection
+    title: "完美無瑕"
+    artist: "陳奕迅"
+  - name: wheel_hush
+    title: "車輪滾滾"
+    # artist omitted -> AI guess
