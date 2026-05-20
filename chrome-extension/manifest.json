@@ -9,6 +9,8 @@
     "https://*.suno.com/*",
     "https://suno.ai/*",
     "https://*.suno.ai/*",
+    "https://www.kkbox.com/*",
+    "https://kkbox.com/*",
     "http://127.0.0.1/*",
     "http://localhost/*"
   ],

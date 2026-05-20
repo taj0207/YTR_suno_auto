@@ -24,6 +24,7 @@ import requests
 import yaml
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
+from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from pipeline._lib import catalog as cat_lib, paths  # noqa: E402
@@ -36,61 +37,64 @@ UA = (
 HEADERS = {"User-Agent": UA, "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8"}
 
 
+def _path_segments(href: str) -> list[str]:
+    """Get path segments from a KKBox link (may be relative or absolute)."""
+    parsed = urlparse(href)
+    path = parsed.path  # e.g. "/tw/tc/artist/<id>"
+    return [seg for seg in path.split("/") if seg]
+
+
 def search_artist_url(name: str) -> str | None:
     """Find a KKBox artist page URL by searching for the artist's name."""
     url = f"{KKBOX_BASE}/tw/tc/search?q={quote_plus(name)}"
     r = requests.get(url, headers=HEADERS, timeout=20)
     r.raise_for_status()
     soup = BeautifulSoup(r.text, "lxml")
-    # An artist link looks like /tw/tc/artist/<id> (no trailing path).
-    for a in soup.select('a[href^="/tw/tc/artist/"]'):
-        href = a.get("href", "").split("?", 1)[0]
-        parts = [p for p in href.split("/") if p]
-        # /tw/tc/artist/<id>   -> ["tw","tc","artist","<id>"]  (4 segments)
-        if len(parts) == 4 and parts[2] == "artist":
-            return urljoin(KKBOX_BASE, href)
+    # Artist link path: /tw/tc/artist/<id>  (4 segments). Anchor may use
+    # absolute (https://www.kkbox.com/...) or relative href.
+    for a in soup.select('a[href*="/tw/tc/artist/"]'):
+        href = (a.get("href") or "").split("?", 1)[0]
+        segs = _path_segments(href)
+        if len(segs) == 4 and segs[:3] == ["tw", "tc", "artist"]:
+            return urljoin(KKBOX_BASE, href) if href.startswith("/") else href
     return None
 
 
 def fetch_artist_songs(artist_url: str, max_songs: int = 100) -> list[tuple[str, str]]:
-    """Return [(title, song_url), ...] for the artist. Stops at max_songs."""
-    # KKBox usually has both /artist/<id> and /artist/<id>/songs — try both.
-    tried = []
-    for path in ("/songs", ""):
-        u = artist_url + path
-        tried.append(u)
-        r = requests.get(u, headers=HEADERS, timeout=20)
-        if not r.ok:
+    """Return [(title, song_url), ...] from the artist's main page."""
+    r = requests.get(artist_url, headers=HEADERS, timeout=20)
+    r.raise_for_status()
+    soup = BeautifulSoup(r.text, "lxml")
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for a in soup.select('a[href*="/tw/tc/song/"]'):
+        href = (a.get("href") or "").split("?", 1)[0]
+        segs = _path_segments(href)
+        if len(segs) < 4 or segs[:3] != ["tw", "tc", "song"]:
             continue
-        soup = BeautifulSoup(r.text, "lxml")
-        out: list[tuple[str, str]] = []
-        seen: set[str] = set()
-        for a in soup.select('a[href^="/tw/tc/song/"]'):
-            href = a.get("href", "").split("?", 1)[0]
-            song_url = urljoin(KKBOX_BASE, href)
-            if song_url in seen:
-                continue
-            # Title: <a>'s text, or a child element's text. KKBox markup varies.
-            title = a.get_text(strip=True)
-            if not title:
-                el = a.find(["span", "div", "h1", "h2", "h3"])
-                if el:
-                    title = el.get_text(strip=True)
-            if not title:
-                title = (a.get("title") or "").strip()
-            if not title:
-                continue
-            seen.add(song_url)
-            out.append((title, song_url))
-            if len(out) >= max_songs:
-                break
-        if out:
-            return out
-    raise RuntimeError(
-        f"could not extract song list from artist page. tried: {tried}. "
-        "KKBox markup may have changed — F12 the artist page and update the "
-        "selectors in pipeline/00_discover.py:fetch_artist_songs()."
-    )
+        song_url = urljoin(KKBOX_BASE, href) if href.startswith("/") else href
+        if song_url in seen:
+            continue
+        title = a.get_text(strip=True)
+        if not title:
+            el = a.find(["span", "div", "h1", "h2", "h3"])
+            if el:
+                title = el.get_text(strip=True)
+        if not title:
+            title = (a.get("title") or "").strip()
+        if not title:
+            continue
+        seen.add(song_url)
+        out.append((title, song_url))
+        if len(out) >= max_songs:
+            break
+    if not out:
+        raise RuntimeError(
+            f"could not extract song list from {artist_url}. "
+            "KKBox markup may have changed — F12 the page and look for "
+            "<a href=\".../song/...\"> elements."
+        )
+    return out
 
 
 def main() -> int:

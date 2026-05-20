@@ -74,11 +74,32 @@ async function findSunoTab() {
   return null;
 }
 
-async function proxyFetch(args) {
-  const tab = await findSunoTab();
-  if (!tab) throw new Error("no suno.com tab open in this Chrome");
+function bytesToB64(buf) {
+  let s = "";
+  const view = new Uint8Array(buf);
+  for (let i = 0; i < view.length; i += 0x8000) {
+    s += String.fromCharCode.apply(null, view.subarray(i, i + 0x8000));
+  }
+  return btoa(s);
+}
 
-  // Inject fetch into the tab's MAIN world so it uses the live session.
+async function swFetch(args) {
+  // Cross-origin fetch in the SW. With host_permissions and
+  // credentials:"include", the user's Chrome cookies for the target host
+  // attach automatically (e.g. KKBox WAF cookie after user visits kkbox.com).
+  const init = { method: args.method || "GET", credentials: "include" };
+  if (args.headers) init.headers = args.headers;
+  if (args.body !== undefined && args.body !== null) init.body = args.body;
+  const r = await fetch(args.url, init);
+  const buf = await r.arrayBuffer();
+  const respHeaders = {};
+  r.headers.forEach((v, k) => { respHeaders[k] = v; });
+  return { status: r.status, headers: respHeaders, body_b64: bytesToB64(buf) };
+}
+
+async function tabMainWorldFetch(tab, args) {
+  // Run fetch from inside a real page (MAIN world). Useful when an Authorization
+  // header / SPA state is needed and only the page can produce it.
   const [{ result, error }] = await chrome.scripting.executeScript({
     target: { tabId: tab.id },
     world: "MAIN",
@@ -89,7 +110,6 @@ async function proxyFetch(args) {
         if (body !== undefined && body !== null) init.body = body;
         const r = await fetch(url, init);
         const buf = await r.arrayBuffer();
-        // base64-encode bytes for safe JSON transport
         let s = "";
         const view = new Uint8Array(buf);
         for (let i = 0; i < view.length; i += 0x8000) {
@@ -97,11 +117,7 @@ async function proxyFetch(args) {
         }
         const respHeaders = {};
         r.headers.forEach((v, k) => { respHeaders[k] = v; });
-        return {
-          status: r.status,
-          headers: respHeaders,
-          body_b64: btoa(s),
-        };
+        return { status: r.status, headers: respHeaders, body_b64: btoa(s) };
       } catch (e) {
         return { __error: String(e) };
       }
@@ -111,6 +127,22 @@ async function proxyFetch(args) {
   if (error) throw new Error(String(error));
   if (result && result.__error) throw new Error(result.__error);
   return result;
+}
+
+async function proxyFetch(args) {
+  let host = "";
+  try { host = new URL(args.url).host.toLowerCase(); } catch (_) {}
+
+  // For Suno API calls, route through a suno.com tab so the SPA-rotated JWT
+  // and Service Worker handling apply. For everything else (KKBox), use the
+  // service worker — cross-origin is fine with host_permissions, and the
+  // user's Chrome cookies (e.g. WAF challenge cookie) attach automatically.
+  if (host.endsWith("suno.com") || host.endsWith("suno.ai")) {
+    const tab = await findSunoTab();
+    if (tab) return await tabMainWorldFetch(tab, args);
+    // fall through to SW fetch if no tab — limited but better than failing
+  }
+  return await swFetch(args);
 }
 
 async function handleCommand(msg) {

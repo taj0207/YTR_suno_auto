@@ -54,24 +54,53 @@ def guess_artist(title: str) -> str:
 
 def search_song_url(title: str, artist: str) -> str | None:
     """Return the canonical KKBox song page URL for (title, artist), or None."""
+    from urllib.parse import urlparse  # local: only needed in fallback path
     q = f"{artist} {title}".strip()
     url = f"{KKBOX_BASE}/tw/tc/search?q={quote_plus(q)}"
     r = requests.get(url, headers=HEADERS, timeout=20)
     r.raise_for_status()
     soup = BeautifulSoup(r.text, "lxml")
-
-    # KKBox search results contain <a href="/tw/tc/song/..."> links.
     for a in soup.select('a[href*="/tw/tc/song/"]'):
-        href = a.get("href", "")
-        if href.startswith("/tw/tc/song/"):
-            return KKBOX_BASE + href.split("?", 1)[0]
+        href = (a.get("href") or "").split("?", 1)[0]
+        path = urlparse(href).path
+        segs = [s for s in path.split("/") if s]
+        if len(segs) >= 4 and segs[:3] == ["tw", "tc", "song"]:
+            return urljoin(KKBOX_BASE, href) if href.startswith("/") else href
     return None
 
 
+def _waf_blocked(html: str) -> bool:
+    """KKBox AWS WAF challenge sentinel — empty title + awsWafCookieDomainList."""
+    return "awsWafCookieDomainList" in html or "AwsWafIntegration" in html
+
+
 def fetch_partial_lyrics(song_url: str) -> str:
+    # Plain requests first
     r = requests.get(song_url, headers=HEADERS, timeout=20)
-    r.raise_for_status()
-    soup = BeautifulSoup(r.text, "lxml")
+    html = r.text
+    if r.ok and not _waf_blocked(html):
+        return _extract_lyrics(BeautifulSoup(html, "lxml"))
+
+    # WAF tripped (or non-200). Route through the YTR Suno Bridge extension —
+    # it fetches with the user's real Chrome session + cookies, bypassing WAF.
+    try:
+        from pipeline._lib import suno_bridge
+        bridge = suno_bridge.get_bridge()
+        bridge.wait_for_extension(timeout=30)
+        status, _hdrs, body = bridge.fetch(song_url, method="GET")
+        html = body.decode("utf-8", errors="replace")
+        if status != 200 or _waf_blocked(html):
+            raise RuntimeError(
+                f"WAF still blocking via bridge (status={status}). "
+                "Open https://www.kkbox.com/ in your Chrome once and solve any "
+                "CAPTCHA so the WAF cookie is set, then retry."
+            )
+        return _extract_lyrics(BeautifulSoup(html, "lxml"))
+    except Exception as e:
+        raise RuntimeError(f"KKBox song page blocked by WAF and bridge failed: {e}") from e
+
+
+def _extract_lyrics(soup) -> str:
 
     # KKBox shows partial lyrics inside a container. Selectors below are best-guess
     # and may need tuning if KKBox changes their markup — check the actual HTML.
