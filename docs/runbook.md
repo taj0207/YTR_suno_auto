@@ -49,22 +49,55 @@ GOOGLE_TRANSLATE_API_KEY=AIza...      # GCP Console → 啟用 Cloud Translation
 
 ## §3 一次性 Chrome 環境準備
 
-### 3.1 解 KKBox WAF
+### 3.1 解 KKBox WAF challenge(讓 extension 之後能抓歌詞)
 
-開 https://www.kkbox.com/tw/tc/(跳 CAPTCHA 就解)→ 設好 WAF cookie。
+**為什麼**:KKBox 歌曲頁有 AWS WAF 擋程式抓取。你親自瀏覽過一次後,WAF 會發 cookie 給你的 Chrome,之後 extension 用同一個 tab navigate 就過得了。
+
+**步驟**:
+1. Chrome 開 https://www.kkbox.com/tw/tc/
+2. 如果看到「正在驗證您是否為機器人」/ hCaptcha 圖片挑戰之類 → **按指示完成**(通常點一下方塊或拼圖)
+3. 看到正常 KKBox 首頁(有歌、有海報)就表示**過關**
+4. **驗證**:複製貼上任一首歌的網址,例如:
+   ```
+   https://www.kkbox.com/tw/tc/song/4mjpw823f387robhP5
+   ```
+   應該看到歌曲頁面 + partial 歌詞顯示。**沒看到歌詞**就是 WAF 還沒清掉,回 step 2 再走一次。
+5. **這個 tab 不要關**(讓它放著就好,pipeline 抓歌詞時 extension 會用)
+
+**WAF cookie 通常有效期幾天**。如果之後 pipeline Step 1 失敗訊息含 `WAF-blocking`,就再做一次這節即可。
+
+---
 
 ### 3.2 登入 Suno
 
-開 https://suno.com/ → 登入(任何方式)→ 進 `/create`。
+**步驟**:
+1. Chrome 開 https://suno.com/
+2. 沒登入就按右上角 **Sign in** → 用 Email / Google / Discord(任何方式)登入
+3. 登入後 URL 進到 `https://suno.com/create`(會看到歌曲創作介面)
+4. **這個 tab 不要關**(pipeline 跑 Step 4/5 時 extension 會用這個 tab 提交給 Suno)
 
-### 3.3 Prime Suno generate template
+**驗證**:點工具列的 YTR Suno Bridge extension 圖示。它的 badge 應該顯示綠色 `✓`(表示 extension 已攔到 Bearer token)。
 
-**在 suno.com/create 點一次 Create 按鈕**(隨便寫個 prompt)。
-- Extension webRequest 攔到 POST → 自動存 template 進 storage.local
-- 不需等到 render 完,送出就好
-- Pipeline 之後就拿這份 template 替換 prompt/tags 再送
+---
 
-驗證有抓到:點 extension 圖示 → badge 應該變綠 ✓
+### 3.3 Prime Suno generate template(讓 extension 抓到 POST 模板)
+
+**為什麼**:Suno generate POST body 有 20 多個欄位,含你帳號特有的 `user_tier` 跟 `create_session_token`。Pipeline 沒辦法自己合成這些,所以**你親手點一次 Create,extension 攔到那個 POST 存起來當「template」**,之後 pipeline 拿來改 prompt/tags 就能送。
+
+**步驟**:
+1. 確認在 https://suno.com/create
+2. 切到 **Custom** 模式(右上角應該有 Simple / Custom 切換)
+3. 在 **Song Description / Lyrics** 欄位隨便寫一行,例如 `test`
+4. 在 **Style of Music** 欄位隨便寫一行,例如 `pop`
+5. **按 Create 按鈕**送出
+6. **不需要等它真的跑完**。送出去那一瞬間,extension 就攔到 POST 存了 template
+7. 想取消那首歌的 Suno credit:在 Suno UI 找到剛跑的歌按刪除(可選)
+
+**驗證**:
+- 工具列的 extension badge 仍是 ✓(Bearer 還在)
+- 之後 pipeline Step 4 印 `[ext] extension connected — Bearer=yes, template=yes` 就表示 template 也有了
+
+**這個動作只需要做一次**。Template 存在 `chrome.storage.local`,reload extension 跟重開瀏覽器都不會丟。除非 Suno 哪天把 server-side session 過期(pipeline 收到 422),才需要再點一次。
 
 ---
 
