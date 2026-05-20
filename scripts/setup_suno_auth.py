@@ -1,15 +1,19 @@
-"""One-time Suno login: opens your REAL daily Chrome (with your real profile)
-so Google sign-in works without anti-automation trips. After login the script
-saves a Playwright storage_state for headless reuse by the pipeline.
+"""One-time Suno login.
 
-REQUIREMENT: close Chrome first. Chrome holds an exclusive lock on the profile
-files; if it's open, Playwright will fail or silently route the window into
-your already-running Chrome (which we can't control).
+Approach: copy your daily Chrome profile to secrets/suno_chrome_profile/ then
+launch Playwright against THAT copy. The copy keeps your Google cookies, so
+Sign-in-with-Google works without Google's anti-automation block, but it lives
+in an isolated location so Chrome won't IPC-route the launched window into
+your daily Chrome process.
 
-Override the profile if you want a separate one (so you don't have to close
-Chrome):
-    set SUNO_CHROME_USER_DATA=D:/some/other/dir
-    set SUNO_CHROME_PROFILE=Default       (or 'Profile 1' etc.)
+First run: copies the profile (one-time, ~50–200 MB, skips browser caches).
+Later runs: reuses the copy.
+
+Env overrides:
+    SUNO_CHROME_USER_DATA  source Chrome User Data dir to copy from
+    SUNO_CHROME_PROFILE    which profile inside it ('Default', 'Profile 1', ...)
+    SUNO_USE_REAL_PROFILE=1   skip the copy and use the real profile directly
+                              (must close Chrome first)
 
 Run:
     python scripts/setup_suno_auth.py
@@ -40,6 +44,53 @@ def default_chrome_user_data() -> Path | None:
         if c.exists():
             return c
     return None
+
+
+# Browser cache / DB / logs we never need for auth — skipping these saves a LOT.
+SKIP_DIRS = {
+    "Cache", "Code Cache", "GPUCache", "Service Worker", "Application Cache",
+    "GrShaderCache", "ShaderCache", "VideoDecodeStats", "Crashpad",
+    "Network Action Predictor", "blob_storage", "shared_proto_db",
+    "optimization_guide_hint_cache_store", "Reporting and NEL",
+    "DawnCache", "DawnGraphiteCache", "DawnWebGPUCache",
+}
+SKIP_FILES = {
+    "History", "History-journal", "Visited Links",
+    "Top Sites", "Top Sites-journal", "Favicons", "Favicons-journal",
+}
+
+
+def _copy_filter(_src, names):
+    return [n for n in names if n in SKIP_DIRS or n in SKIP_FILES]
+
+
+def ensure_isolated_profile(source_user_data: Path, profile: str) -> Path:
+    """Mirror the user's Chrome profile to secrets/suno_chrome_profile so
+    Playwright can launch against an isolated copy. Returns user_data_dir to
+    point Playwright at. No-op on subsequent runs (idempotent)."""
+    dest_root = paths.SECRETS / "suno_chrome_profile"
+    dest_root.mkdir(parents=True, exist_ok=True)
+    dest_profile = dest_root / profile
+
+    if dest_profile.exists():
+        print(f"[ok ] using existing isolated profile at {dest_profile}")
+        return dest_root
+
+    src_profile = source_user_data / profile
+    if not src_profile.exists():
+        raise RuntimeError(f"source profile not found: {src_profile}")
+
+    # User-Data-level files that Chrome reads on startup
+    for f in ("Local State", "First Run", "Last Version", "Last Browser"):
+        s = source_user_data / f
+        if s.exists():
+            shutil.copy2(s, dest_root / f)
+
+    print(f"copying profile '{profile}' → {dest_profile}")
+    print("(one-time; skipping caches. Takes 10–60 seconds depending on profile size.)")
+    shutil.copytree(src_profile, dest_profile, ignore=_copy_filter, dirs_exist_ok=False)
+    print(f"[ok ] profile copied")
+    return dest_root
 
 
 def chrome_running() -> bool:
@@ -83,26 +134,16 @@ def main() -> int:
         os.environ.get("SUNO_STORAGE_STATE", paths.SECRETS / "suno_storage_state.json")
     )
 
-    user_data_dir = Path(
+    source_user_data = Path(
         os.environ.get("SUNO_CHROME_USER_DATA") or (default_chrome_user_data() or "")
     )
     profile = os.environ.get("SUNO_CHROME_PROFILE", "Default")
+    use_real = os.environ.get("SUNO_USE_REAL_PROFILE") == "1"
 
-    if not user_data_dir or not user_data_dir.exists():
+    if not source_user_data or not source_user_data.exists():
         print(f"could not find Chrome User Data dir. Set SUNO_CHROME_USER_DATA to override.",
               file=sys.stderr)
         return 2
-
-    if chrome_running():
-        print("=" * 70)
-        print("⚠  Chrome is currently running.")
-        print(f"   Profile path:  {user_data_dir}")
-        print(f"   Profile name:  {profile}")
-        print()
-        print("   Chrome locks the profile files while open. Close Chrome FULLY")
-        print("   (including the system-tray icon) and re-run this script.")
-        print("=" * 70)
-        return 1
 
     try:
         from playwright.sync_api import sync_playwright
@@ -111,9 +152,21 @@ def main() -> int:
               file=sys.stderr)
         return 2
 
-    print(f"Using profile '{profile}' at: {user_data_dir}")
-    print("(your real Chrome session, with your real Google cookies — this is")
-    print(" why Suno's Google sign-in will work here.)")
+    if use_real:
+        if chrome_running():
+            print("=" * 70)
+            print("⚠  SUNO_USE_REAL_PROFILE=1 but Chrome is running.")
+            print("   Close Chrome FULLY (including system-tray) and re-run.")
+            print("=" * 70)
+            return 1
+        user_data_dir = source_user_data
+        print(f"Using REAL profile '{profile}' at: {user_data_dir}")
+    else:
+        if chrome_running():
+            print("[info] Chrome is running — that's fine, we'll use an isolated copy of your profile.")
+        user_data_dir = ensure_isolated_profile(source_user_data, profile)
+        print(f"Using isolated profile '{profile}' at: {user_data_dir}")
+
     print()
 
     with sync_playwright() as pw:
