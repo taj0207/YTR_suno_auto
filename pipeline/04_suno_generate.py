@@ -27,8 +27,10 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import re
 import sys
+import time
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -145,8 +147,12 @@ def main() -> int:
         return 0
 
     n_ok = n_fail = 0
+    submit_delay_s = float(os.environ.get("SUNO_SUBMIT_DELAY_S", "8"))
     with suno.session(headless=True) as client:
-        for song, prompt_path, prompt_text, prompt_hash in pending:
+        for idx, (song, prompt_path, prompt_text, prompt_hash) in enumerate(pending):
+            if idx > 0 and submit_delay_s > 0:
+                print(f"[wait] {submit_delay_s:.0f}s between submissions to avoid rate-limit...")
+                time.sleep(submit_delay_s)
             try:
                 if args.mode == "vocal":
                     lyrics, styles = split_vocal_prompt(prompt_text)

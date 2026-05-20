@@ -79,6 +79,32 @@ chrome.webRequest.onBeforeSendHeaders.addListener(
   ["requestHeaders", "extraHeaders"]
 );
 
+// === Highlight POST requests to studio-api so we can see Suno's real
+// generate endpoint when the user clicks "Create" manually ===============
+chrome.webRequest.onBeforeRequest.addListener(
+  (details) => {
+    if (details.method !== "POST") return;
+    let bodySample = "";
+    try {
+      const rb = details.requestBody;
+      if (rb?.raw && rb.raw[0]?.bytes) {
+        const txt = new TextDecoder().decode(rb.raw[0].bytes);
+        bodySample = txt.slice(0, 400);
+      } else if (rb?.formData) {
+        bodySample = JSON.stringify(rb.formData).slice(0, 400);
+      }
+    } catch (_) {}
+    console.log(
+      "%c[ytr-bridge] SUNO POST %s\n  body: %s",
+      "color:#7c3aed;font-weight:bold",
+      details.url,
+      bodySample
+    );
+  },
+  { urls: ["https://*.suno.com/api/*", "https://*.suno.ai/api/*"] },
+  ["requestBody"]
+);
+
 // ---- WebSocket bridge ------------------------------------------------------
 
 function send(obj) {
