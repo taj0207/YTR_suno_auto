@@ -62,10 +62,39 @@ def cdp_ready() -> bool:
         return False
 
 
+def chrome_running() -> bool:
+    try:
+        out = subprocess.check_output(
+            ["tasklist", "/FI", "IMAGENAME eq chrome.exe"],
+            text=True, errors="ignore"
+        )
+        return "chrome.exe" in out.lower()
+    except Exception:
+        return False
+
+
 def launch_chrome_with_cdp(user_data_dir: Path) -> None:
     chrome = find_chrome()
     if not chrome:
         raise RuntimeError("chrome.exe not found in standard locations")
+
+    # Critical: Chrome enforces single-process-per-User-Data-dir. If another
+    # Chrome is already running with this profile, our spawn IPC-routes into
+    # it and exits — leaving no CDP port. Bail with a clear message.
+    if chrome_running():
+        raise RuntimeError(
+            "Chrome is already running. Because Chrome enforces one process per "
+            "User Data dir, a new launch silently routes into the existing "
+            "process and our --remote-debugging-port flag is ignored.\n\n"
+            "Fix EITHER:\n"
+            "  (a) Close ALL Chrome — main windows AND background/system-tray icon.\n"
+            "      Verify with: Get-Process chrome  (must be empty)\n"
+            "      Then re-run this script.\n\n"
+            "  (b) Or start Chrome YOURSELF with the debug flag, then re-run:\n"
+            f'      & "{chrome}" --remote-debugging-port=9222 '
+            f'--user-data-dir="{user_data_dir}"\n'
+        )
+
     print(f"starting Chrome at {chrome}")
     print(f"  --remote-debugging-port=9222")
     print(f"  --user-data-dir={user_data_dir}")
@@ -77,12 +106,17 @@ def launch_chrome_with_cdp(user_data_dir: Path) -> None:
         "--no-default-browser-check",
     ])
     # Wait for CDP to come up
-    for _ in range(30):
+    print("[wait] for CDP endpoint at localhost:9222 (up to 30s)...")
+    for i in range(60):
         if cdp_ready():
-            print("[ok ] CDP endpoint reachable")
+            print(f"[ok ] CDP endpoint reachable (after {i * 0.5:.1f}s)")
             return
         time.sleep(0.5)
-    raise RuntimeError(f"Chrome didn't start a CDP listener on {CDP_BASE} within 15s")
+    raise RuntimeError(
+        f"Chrome didn't start a CDP listener on {CDP_BASE} within 30s.\n"
+        "Most likely Chrome silently routed into an already-running process. "
+        "Close ALL Chrome (including system-tray icon) and try again."
+    )
 
 
 def main() -> int:
