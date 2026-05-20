@@ -1,26 +1,25 @@
 """Suno HTTP client.
 
-Approach (matching what suno_downloader Chrome extension does):
-  1. Open suno.com in headless Playwright with our saved storage_state.
-  2. Listen for any request to studio-api.* → extract Bearer token + apiBase.
-  3. Close the browser. Use plain `requests` with that header for all API calls.
+Auth source: the YTR Suno Bridge Chrome extension (chrome-extension/) connects
+to a local WebSocket server (pipeline/_lib/suno_bridge.py) and supplies the
+Bearer token + apiBase captured live from the user's logged-in Chrome.
+We never run Playwright or open Chrome ourselves — Chrome 136+ blocks that
+anyway. Just use `requests` with the captured token.
 
-This lets us reuse Suno's real session without piping every call through the
-browser process — fast, no JS round-trip, parallelisable.
-
-Endpoint paths below are from the working extension. The /generate path is the
-one endpoint the extension does NOT observe (it only handles download), so it's
-a best-guess; verify with DevTools on suno.com if you see 404s in Step 4.
+Endpoint paths are from the suno_downloader extension's observed traffic.
+The /generate path is the one endpoint that extension does NOT exercise (it's
+a download tool), so it's a best-guess; verify with DevTools if Step 4 404s.
 """
 from __future__ import annotations
 
 import os
 import time
 from contextlib import contextmanager
-from pathlib import Path
 from typing import Iterator
 
 import requests
+
+from . import suno_bridge
 
 # === Endpoint paths (relative to apiBase) ==================================
 PATHS = {
@@ -43,75 +42,27 @@ class SunoError(RuntimeError):
     pass
 
 
-# === Auth capture ==========================================================
-
-def _capture(headless: bool = True, wait_secs: int = 30) -> tuple[str, str]:
-    """Open suno.com with saved storage_state and capture (Bearer, apiBase)."""
-    state_path = Path(os.environ.get("SUNO_STORAGE_STATE", "secrets/suno_storage_state.json"))
-    if not state_path.exists():
-        raise SunoError(
-            f"missing {state_path}. run: python scripts/setup_suno_auth.py"
-        )
-
-    from playwright.sync_api import sync_playwright
-
-    captured: dict[str, str | None] = {"auth": None, "api_base": None}
-
-    def on_request(req) -> None:
-        if captured["auth"]:
-            return
-        url = req.url
-        if "studio-api" not in url:
-            return
-        auth = req.headers.get("authorization")
-        if auth and auth.lower().startswith("bearer "):
-            captured["auth"] = auth
-            try:
-                split = url.split("/api/", 1)
-                if len(split) == 2:
-                    captured["api_base"] = split[0] + "/api"
-            except Exception:
-                pass
-
-    with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=headless)
-        ctx = browser.new_context(storage_state=str(state_path))
-        page = ctx.new_page()
-        page.on("request", on_request)
-        try:
-            page.goto(f"{SUNO_APP}/create", wait_until="domcontentloaded")
-            deadline = time.monotonic() + wait_secs
-            while time.monotonic() < deadline and not captured["auth"]:
-                page.wait_for_timeout(250)
-        finally:
-            ctx.close()
-            browser.close()
-
-    if not captured["auth"]:
-        raise SunoError(
-            "could not capture Bearer token from suno.com — session may have "
-            "expired. run: python scripts/setup_suno_auth.py"
-        )
-    api_base = (
-        os.environ.get("SUNO_API_BASE")
-        or captured["api_base"]
-        or DEFAULT_API_BASE
-    )
-    return captured["auth"], api_base
-
+# === Auth source ============================================================
 
 @contextmanager
 def session(headless: bool = True) -> Iterator["SunoClient"]:
-    """Open one authenticated SunoClient and clean it up on exit."""
-    auth, api_base = _capture(headless=headless)
+    """Open one authenticated SunoClient by pulling auth from the bridge
+    extension. `headless` is ignored (kept for API compat)."""
+    del headless  # unused; the extension lives in the user's real Chrome
+    bridge = suno_bridge.get_bridge()
+    auth = bridge.wait_for_auth(timeout=int(os.environ.get("SUNO_AUTH_WAIT", "180")))
+    api_base = os.environ.get("SUNO_API_BASE") or auth.api_base or DEFAULT_API_BASE
     s = requests.Session()
     s.headers.update({
-        "Authorization": auth,
+        "Authorization": auth.bearer,
         "Accept": "application/json, */*",
-        "User-Agent": "YTR-suno-auto/1.0",
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36"
+        ),
     })
     try:
-        yield SunoClient(s, api_base)
+        yield SunoClient(s, api_base, bridge=bridge)
     finally:
         s.close()
 
@@ -119,9 +70,23 @@ def session(headless: bool = True) -> Iterator["SunoClient"]:
 # === Client ================================================================
 
 class SunoClient:
-    def __init__(self, session: requests.Session, api_base: str):
+    def __init__(self, session: requests.Session, api_base: str,
+                 bridge: "suno_bridge.SunoBridge | None" = None):
         self.s = session
         self.api_base = api_base.rstrip("/")
+        self.bridge = bridge
+
+    def refresh_auth(self) -> bool:
+        """Refetch Bearer from bridge (call this on 401). Returns True if changed."""
+        if not self.bridge:
+            return False
+        auth = self.bridge.get_auth()
+        if not auth or not auth.bearer:
+            return False
+        if self.s.headers.get("Authorization") == auth.bearer:
+            return False
+        self.s.headers["Authorization"] = auth.bearer
+        return True
 
     def _url(self, key: str, **kw) -> str:
         return self.api_base + PATHS[key].format(**kw)

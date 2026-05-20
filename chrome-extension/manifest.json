@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "YTR Suno Bridge",
+  "version": "0.2.0",
+  "description": "Bridges the YTR_suno_auto pipeline to your logged-in Suno session in Chrome. Captures the Bearer token + apiBase and proxies authenticated API calls.",
+  "permissions": ["webRequest", "scripting", "tabs", "storage", "alarms"],
+  "host_permissions": [
+    "https://suno.com/*",
+    "https://*.suno.com/*",
+    "https://suno.ai/*",
+    "https://*.suno.ai/*",
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "YTR Suno Bridge"
+  }
+}

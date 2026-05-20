@@ -28,10 +28,18 @@ Step 0 takes an artist list and emits only songs NOT yet submitted to Suno (chec
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-playwright install chromium
-copy .env.example .env  # fill in keys
-python scripts\setup_suno_auth.py  # manual Suno login -> secrets/suno_storage_state.json
+copy .env.example .env  # fill in GEMINI_API_KEY + GOOGLE_TRANSLATE_API_KEY
 ```
+
+For Suno auth, install the **YTR Suno Bridge** Chrome extension (one-time):
+
+1. `chrome://extensions/` → enable Developer mode.
+2. **Load unpacked** → select `chrome-extension/`.
+3. Pin the extension. Keep your daily Chrome open with at least one `suno.com`
+   tab — the extension auto-captures the Bearer token from your real session
+   and forwards it to the pipeline over `ws://127.0.0.1:18792`.
+
+See `chrome-extension/README.md` for the protocol and troubleshooting.
 
 ## Run
 
