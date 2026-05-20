@@ -70,59 +70,72 @@ def search_song_url(title: str, artist: str) -> str | None:
 
 
 def _waf_blocked(html: str) -> bool:
-    """KKBox AWS WAF challenge sentinel — empty title + awsWafCookieDomainList."""
+    """KKBox AWS WAF challenge sentinel."""
     return "awsWafCookieDomainList" in html or "AwsWafIntegration" in html
 
 
-def fetch_partial_lyrics(song_url: str) -> str:
-    # Plain requests first
-    r = requests.get(song_url, headers=HEADERS, timeout=20)
-    html = r.text
-    if r.ok and not _waf_blocked(html):
-        return _extract_lyrics(BeautifulSoup(html, "lxml"))
+def _debug_dump(song: str, html: str) -> Path:
+    from pipeline._lib import paths as _paths
+    debug_dir = _paths.DATA_ROOT / ".debug" / "kkbox_song_html"
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    p = debug_dir / f"{song}.html"
+    p.write_text(html, encoding="utf-8")
+    return p
 
-    # WAF tripped (or non-200). Route through the YTR Suno Bridge extension —
-    # it fetches with the user's real Chrome session + cookies, bypassing WAF.
+
+def fetch_partial_lyrics(song_url: str, debug_song: str | None = None) -> str:
+    """Fetch a KKBox song page via the bridge extension (Chrome has the WAF cookie).
+    Plain `requests` never gets past the WAF challenge, so we skip it.
+    """
+    from pipeline._lib import suno_bridge
     try:
-        from pipeline._lib import suno_bridge
         bridge = suno_bridge.get_bridge()
         bridge.wait_for_extension(timeout=30)
-        status, _hdrs, body = bridge.fetch(song_url, method="GET")
-        html = body.decode("utf-8", errors="replace")
-        if status != 200 or _waf_blocked(html):
-            raise RuntimeError(
-                f"WAF still blocking via bridge (status={status}). "
-                "Open https://www.kkbox.com/ in your Chrome once and solve any "
-                "CAPTCHA so the WAF cookie is set, then retry."
-            )
-        return _extract_lyrics(BeautifulSoup(html, "lxml"))
-    except Exception as e:
-        raise RuntimeError(f"KKBox song page blocked by WAF and bridge failed: {e}") from e
+    except suno_bridge.SunoBridgeError as e:
+        raise RuntimeError(
+            f"need YTR Suno Bridge extension to fetch KKBox song pages "
+            f"(WAF blocks plain HTTP). {e}"
+        ) from e
+
+    status, _hdrs, body = bridge.fetch(song_url, method="GET")
+    html = body.decode("utf-8", errors="replace")
+
+    if debug_song:
+        dump = _debug_dump(debug_song, html)
+        print(f"        (debug HTML dumped to {dump})")
+
+    if status != 200 or _waf_blocked(html):
+        raise RuntimeError(
+            f"KKBox still WAF-blocking (status={status}). Open "
+            "https://www.kkbox.com/ in your Chrome once, solve any CAPTCHA, "
+            "then retry. Cookie may have expired."
+        )
+    return _extract_lyrics(BeautifulSoup(html, "lxml"))
 
 
 def _extract_lyrics(soup) -> str:
-
-    # KKBox shows partial lyrics inside a container. Selectors below are best-guess
-    # and may need tuning if KKBox changes their markup — check the actual HTML.
+    # KKBox markup is unknown to me until I see the real (non-WAF) HTML — see
+    # data/.debug/kkbox_song_html/*.html. Selectors are best-guess; if all
+    # miss we fall back to "largest text block on the page".
     candidates = [
-        ".lyrics",                       # commonly seen class name
+        ".lyrics",
         '[data-testid="lyrics"]',
         "div.lyrics-container",
         "section[class*='lyric']",
+        "[class*='Lyrics']",
+        "pre",
     ]
     for sel in candidates:
         node = soup.select_one(sel)
         if node and node.get_text(strip=True):
-            # Preserve line breaks: replace <br> with \n before extracting text.
             for br in node.find_all("br"):
                 br.replace_with("\n")
             text = node.get_text("\n")
             return _clean(text)
 
-    # Fallback: pull the largest <pre>/<div> that looks like lyrics.
-    blocks = [
-        n.get_text("\n") for n in soup.find_all(["pre", "div"]) if len(n.get_text(strip=True)) > 80
-    ]
+    # Largest non-trivial text block — last-ditch fallback
+    blocks = [n.get_text("\n") for n in soup.find_all(["pre", "div", "section"])
+              if len(n.get_text(strip=True)) > 80]
     if blocks:
         return _clean(max(blocks, key=len))
     return ""
@@ -176,7 +189,7 @@ def main() -> int:
                 time.sleep(args.sleep)
 
             print(f"[scrp] {name}: {song_url}")
-            lyrics = fetch_partial_lyrics(song_url)
+            lyrics = fetch_partial_lyrics(song_url, debug_song=name)
             if not lyrics:
                 raise RuntimeError("empty lyrics block (KKBox markup may have changed)")
 
