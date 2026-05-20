@@ -10,32 +10,32 @@ storage_state JSON captured from a manual login.
 
 ## One-time setup
 
+**Close Chrome completely first** (including the system-tray icon).
+
 ```powershell
 python scripts\setup_suno_auth.py
 ```
 
-This opens a real Chrome window (with a dedicated profile under
-`secrets/suno_chrome_profile/`). Falls back to Edge or bundled Chromium if
-Chrome isn't installed.
+This launches Playwright using your **real daily Chrome profile** at
+`%LOCALAPPDATA%\Google\Chrome\User Data\Default`. Because it's your real
+profile, your already-logged-in Google session is intact and Suno's
+Sign-in-with-Google works normally — no anti-automation blocks.
 
-**Login method matters:** Google actively blocks automated browsers from
-signing in. Use one of these instead:
+If you'd rather use a separate Chrome profile (so you don't have to close
+Chrome), set environment variables before running:
 
-| Method | Works in automated browser? |
-|---|---|
-| Email magic link | ✅ Always works |
-| Discord | ✅ Works |
-| Microsoft | ✅ Works |
-| Google | ❌ Usually blocked by Google's anti-automation |
+```powershell
+$env:SUNO_CHROME_USER_DATA = "D:\YTR_suno_auto_chrome"
+$env:SUNO_CHROME_PROFILE   = "Default"
+python scripts\setup_suno_auth.py
+```
 
-If your Suno account is currently Google-only, log in to suno.com from your
-daily Chrome **first**, go to Settings → add an email login method, then run
-the setup script and sign in with email.
+…then log in normally in the window that opens. Suno's Google sign-in may
+still work in a fresh profile, but is less reliable than reusing your real
+session.
 
-After login, the script saves:
-- `secrets/suno_storage_state.json` — cookies + localStorage for headless reuse.
-- `secrets/suno_chrome_profile/` — a persistent Chrome profile so re-running
-  the setup script doesn't ask you to log in again.
+After login, the script saves `secrets/suno_storage_state.json` — cookies +
+localStorage that the pipeline (Step 4 / 5) loads on each headless run.
 
 ## When to re-run
 
