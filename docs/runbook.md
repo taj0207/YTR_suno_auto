@@ -126,25 +126,75 @@ artists:
 
 ---
 
-## §5 (選擇性)新主題建 workspace
+## §5 Workspace 設定(每個風格主題一份 config.yaml)
 
-新風格 album 才需要。否則用既有的 `billie_eilish_depressed`。
+**每個 workspace 是「一張概念專輯的設定包」**,包含:
+- 風格 prompt 模板
+- 聲音性別
+- Suno 目標 workspace 的 `wid`
+- Playlist 命名規則
+- YouTube 文案設定
+
+預設專案附了一個 `workspaces/billie_eilish_depressed/`。**用既有的就直接編它,要做不同主題才複製新的**。
+
+### 5.1 編現有的(改聲音 / playlist 命名等)
+
+```powershell
+notepad workspaces\billie_eilish_depressed\config.yaml
+```
+
+可以改的欄位:
+
+```yaml
+display_name: "Depressed Billie Eilish (Male Vocal)"
+
+vocal: "male"                 # ← 改 "female" / "androgynous" 改聲音
+vocal_style: ""               # ← 選填,"raspy" / "breathy" / "soulful" 等
+
+suno:
+  wid: "84cca4a7-..."         # ← 改成你想送進去的 Suno workspace ID
+                              #    (從 https://suno.com/create?wid=... 抓)
+
+default_prompt_variant: "3_2" # 3_1 / 3_2 兩種 prompt 順序
+
+# Step 4 自動建 playlist 的名稱 + 描述模板
+# placeholders: {date} {batch} {workspace} {display_name} {mode} {job}
+playlist_name_template:        "YTR {display_name} · {date}"
+playlist_description_template: "YTR_suno_auto · workspace={workspace} · mode={mode} · batch={batch}"
+
+youtube:                      # Step 6 用(暫未驗證)
+  album_name_hint: "Depressed Billie Eilish style album"
+  hashtags:
+    - "#BillieEilishStyle"
+    - ...
+```
+
+**改完不用 reload 什麼東西,下次 pipeline 跑就生效**(每首歌跑 Step 3 / 4 都重讀 config)。
+
+### 5.2 風格要求(prompt 模板)
+
+如果要動「給 Gemini 的風格要求」內容(例如把「depressed Billie Eilish」改成別的),編:
+
+```powershell
+notepad workspaces\billie_eilish_depressed\prompt_3_2.j2
+```
+
+模板裡的 `{{ vocal }}` 跟 `{{ vocal_style }}` 會自動帶入 `config.yaml` 的值 —— **改性別只改 config.yaml,不要在模板裡改**。
+
+### 5.3 (選擇性)複製新主題
+
+想做完全不同風格的 album(例如 garage rock),別覆蓋既有的:
 
 ```powershell
 xcopy /E /I workspaces\billie_eilish_depressed workspaces\<新主題slug>
-notepad workspaces\<新主題slug>\config.yaml
-notepad workspaces\<新主題slug>\prompt_3_2.j2
+notepad workspaces\<新主題slug>\config.yaml      # 改 name / display_name / wid / playlist 命名 / youtube
+notepad workspaces\<新主題slug>\prompt_3_2.j2    # 改 Gemini 對風格的要求段落
 ```
 
-`config.yaml` 改:
-- `name`、`display_name`
-- `vocal`:`"male"` / `"female"` / `"androgynous"` 等
-- `vocal_style`(選填):`"raspy"` / `"breathy"` / `""`
-- `suno.wid`:Suno 開新 workspace,從 URL `?wid=` 抓 UUID
-- `playlist_name_template`、`playlist_description_template`:Suno playlist 命名格式,placeholder `{date}`、`{batch}`、`{workspace}`、`{display_name}`、`{mode}`、`{job}`
-- `youtube.album_name_hint`、`hashtags`:之後 Step 6 用(暫未驗證)
-
-`prompt_3_2.j2` 改 Gemini 風格要求那段 —— 模板裡的 `{{ vocal }}` 跟 `{{ vocal_style }}` 會自動帶入 config.yaml 的值,你不用在這檔改性別。
+跑時切 workspace:
+```powershell
+python pipeline\run_all.py --workspace <新主題slug> --artists artist_list.yaml --mode vocal
+```
 
 ---
 
