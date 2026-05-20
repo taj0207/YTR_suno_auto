@@ -84,22 +84,25 @@ chrome.webRequest.onBeforeSendHeaders.addListener(
 chrome.webRequest.onBeforeRequest.addListener(
   (details) => {
     if (details.method !== "POST") return;
+    // Only show the high-signal endpoints — drop analytics/event spam
+    if (!/\/api\/(generate|c\/check|prompts)/i.test(details.url)) return;
     let bodySample = "";
     try {
       const rb = details.requestBody;
       if (rb?.raw && rb.raw[0]?.bytes) {
         const txt = new TextDecoder().decode(rb.raw[0].bytes);
-        bodySample = txt.slice(0, 400);
+        // Full body — generate payload can be a few KB
+        bodySample = txt;
       } else if (rb?.formData) {
-        bodySample = JSON.stringify(rb.formData).slice(0, 400);
+        bodySample = JSON.stringify(rb.formData);
       }
     } catch (_) {}
     console.log(
-      "%c[ytr-bridge] SUNO POST %s\n  body: %s",
+      "%c[ytr-bridge] SUNO POST %s",
       "color:#7c3aed;font-weight:bold",
-      details.url,
-      bodySample
+      details.url
     );
+    console.log("  body:", bodySample);
   },
   { urls: ["https://*.suno.com/api/*", "https://*.suno.ai/api/*"] },
   ["requestBody"]
