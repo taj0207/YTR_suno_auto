@@ -118,8 +118,22 @@ def main() -> int:
 
     with sync_playwright() as pw:
         ctx = open_context(pw, user_data_dir, profile)
-        page = ctx.new_page()
-        page.goto(SUNO_HOME)
+        # Reuse Chrome's first existing tab so the user doesn't have to hunt
+        # for a Playwright-spawned new tab among their restored-session tabs.
+        import time as _t
+        page = None
+        for _ in range(20):
+            if ctx.pages:
+                page = ctx.pages[0]
+                break
+            _t.sleep(0.25)
+        if page is None:
+            page = ctx.new_page()
+        try:
+            page.bring_to_front()
+        except Exception:
+            pass
+        page.goto(SUNO_HOME, wait_until="domcontentloaded")
 
         print("=" * 70)
         print("Log in to Suno in the opened window if you're not already.")
