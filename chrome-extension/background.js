@@ -84,8 +84,8 @@ chrome.webRequest.onBeforeSendHeaders.addListener(
 // generate endpoint when the user clicks "Create" manually ===============
 chrome.webRequest.onBeforeRequest.addListener(
   (details) => {
-    if (details.method !== "POST") return;
-    if (!/\/api\/(generate|c\/check|prompts)/i.test(details.url)) return;
+    if (!["POST", "PUT", "PATCH", "DELETE"].includes(details.method)) return;
+    if (!/\/api\/(generate|c\/check|prompts|playlist|project)/i.test(details.url)) return;
     let bodySample = "";
     try {
       const rb = details.requestBody;
