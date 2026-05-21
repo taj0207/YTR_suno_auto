@@ -149,18 +149,29 @@ def _extract_album_urls(html: str) -> list[str]:
 
 
 def fetch_artist_songs(artist_url: str, max_songs: int = 200,
-                       sleep_s: float = 1.0) -> list[tuple[str, str]]:
+                       sleep_s: float = 1.0,
+                       enough_at: int | None = None) -> list[tuple[str, str]]:
     """Return [(title, song_url), ...] for an artist.
 
     KKBox's artist overview page only shows ~9 'top' songs. To get the full
     catalog we also walk every album the artist has and scrape its track list.
+
+    `enough_at`: stop scraping further albums once we've collected this many
+    songs (cheap early-exit when caller only needs `limit + buffer` pending
+    songs). `max_songs` is the hard cap on the returned list size.
     """
     out: list[tuple[str, str]] = []
     seen: set[str] = set()
+    soft_cap = enough_at if enough_at is not None else max_songs
 
     overview = kkbox_get(artist_url)
     _extract_songs_from_html(overview, seen, out, max_songs)
     initial_n = len(out)
+
+    if len(out) >= soft_cap:
+        print(f"        top-9 already covers requested {soft_cap} song(s); "
+              f"skipping album walk")
+        return out
 
     # Find every album linked from the overview, plus any extra albums on
     # the dedicated /album sub-page when KKBox uses one.
@@ -175,10 +186,11 @@ def fetch_artist_songs(artist_url: str, max_songs: int = 200,
         pass  # /album subpage is optional
 
     print(f"        discovered {len(album_urls)} album(s); top-9 gave {initial_n} song(s) — "
-          f"walking albums for the rest")
+          f"walking albums until ~{soft_cap} songs collected")
 
     for i, album_url in enumerate(album_urls, start=1):
-        if len(out) >= max_songs:
+        if len(out) >= max_songs or len(out) >= soft_cap:
+            print(f"        reached target ({len(out)} ≥ {soft_cap}); stopping after album {i-1}")
             break
         try:
             time.sleep(sleep_s)
@@ -211,7 +223,10 @@ def main() -> int:
     p.add_argument("--refresh", action="store_true",
                    help="re-scrape KKBox even if catalog already exists for this artist")
     p.add_argument("--max-fetch", type=int, default=200,
-                   help="cap how many songs we scrape per artist (default 200)")
+                   help="hard cap on songs scraped per artist (default 200)")
+    p.add_argument("--buffer", type=int, default=10,
+                   help="extra songs scraped beyond artist.limit, as headroom "
+                        "for already-submitted songs (default 10)")
     p.add_argument("--sleep", type=float, default=1.5, help="seconds between KKBox requests")
     args = p.parse_args()
 
@@ -249,8 +264,19 @@ def main() -> int:
                         raise RuntimeError("no KKBox artist page found")
                     print(f"        -> {artist_url}")
                 time.sleep(args.sleep)
-                print(f"[scrp] {slug}: fetching songs (max {args.max_fetch})")
-                titles_and_urls = fetch_artist_songs(artist_url, max_songs=args.max_fetch)
+                # How many songs are already in catalog that are NOT yet
+                # submitted? Subtract them from what we still need to fetch.
+                already_pending = 0
+                if existing:
+                    already_pending = sum(1 for s in existing.songs if not s.submitted)
+                enough_at = max(0, limit + args.buffer - already_pending)
+                enough_at = min(enough_at, args.max_fetch) if enough_at else args.max_fetch
+                print(f"[scrp] {slug}: fetching songs (target ~{enough_at}, "
+                      f"hard cap {args.max_fetch}, sleep {args.sleep}s/req)")
+                titles_and_urls = fetch_artist_songs(
+                    artist_url, max_songs=args.max_fetch,
+                    sleep_s=args.sleep, enough_at=enough_at,
+                )
                 print(f"[ok  ] {slug}: got {len(titles_and_urls)} song(s) from KKBox")
                 time.sleep(args.sleep)
             except Exception as e:  # noqa: BLE001
