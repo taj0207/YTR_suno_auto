@@ -2,7 +2,7 @@
 secrets/
 .env
 
-# Data artifacts (large / regenerable)
+# Data artifacts (large / regenerable / per-user)
 data/jobs/
 data/albums/*/tracks/
 data/lyrics/raw/
@@ -10,6 +10,8 @@ data/lyrics/en/
 data/lyrics/aggregated/
 data/prompts/
 data/.cache/
+data/catalog/
+data/.debug/
 
 # Audio files anywhere
 *.wav
