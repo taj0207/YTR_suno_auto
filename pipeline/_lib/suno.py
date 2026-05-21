@@ -121,7 +121,8 @@ class SunoClient:
     def _build_payload(self, *, mode: str, prompt: str = "", tags: str = "",
                        description: str = "", title: str = "",
                        mv: str | None = None,
-                       persona_id: str | None = None) -> dict:
+                       persona_id: str | None = None,
+                       vocal_gender: str | None = None) -> dict:
         if not self.bridge:
             raise SunoError("bridge required for generate")
         try:
@@ -140,6 +141,17 @@ class SunoClient:
         # otherwise inherit whatever the template captured.
         if persona_id:
             body["persona_id"] = persona_id
+        # Suno's Voice dropdown maps to body.vocal_gender ("m" / "f").
+        # Normalise common spellings.
+        if vocal_gender:
+            vg = vocal_gender.strip().lower()
+            mapped = {
+                "m": "m", "male": "m", "man": "m",
+                "f": "f", "female": "f", "woman": "f",
+                "": "",
+            }.get(vg, vg)
+            if mapped:
+                body["vocal_gender"] = mapped
         if mode == "vocal":
             body["prompt"] = prompt
             body["tags"] = tags
