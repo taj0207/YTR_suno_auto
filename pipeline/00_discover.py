@@ -46,9 +46,15 @@ def _waf_blocked(html: str) -> bool:
 def kkbox_get(url: str) -> str:
     """GET a KKBox URL. Plain requests first; if WAF blocks (now common on
     artist pages too), route through the YTR Suno Bridge extension so the
-    request runs as a real navigation in a kkbox.com tab."""
+    request runs as a real navigation in a kkbox.com tab.
+
+    Forces UTF-8 decoding — KKBox serves UTF-8 HTML but doesn't always
+    declare charset in Content-Type, which makes requests default to
+    ISO-8859-1 and turns Chinese titles into mojibake.
+    """
     try:
         r = requests.get(url, headers=HEADERS, timeout=20)
+        r.encoding = "utf-8"
         if r.ok and not _waf_blocked(r.text):
             return r.text
     except Exception:

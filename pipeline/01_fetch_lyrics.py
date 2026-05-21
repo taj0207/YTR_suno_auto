@@ -58,6 +58,7 @@ def search_song_url(title: str, artist: str) -> str | None:
     q = f"{artist} {title}".strip()
     url = f"{KKBOX_BASE}/tw/tc/search?q={quote_plus(q)}"
     r = requests.get(url, headers=HEADERS, timeout=20)
+    r.encoding = "utf-8"   # KKBox serves UTF-8 but doesn't always say so
     r.raise_for_status()
     soup = BeautifulSoup(r.text, "lxml")
     for a in soup.select('a[href*="/tw/tc/song/"]'):
