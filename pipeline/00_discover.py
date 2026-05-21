@@ -101,13 +101,15 @@ def search_artist_url(name: str) -> str | None:
     return None
 
 
-def fetch_artist_songs(artist_url: str, max_songs: int = 100) -> list[tuple[str, str]]:
-    """Return [(title, song_url), ...] from the artist's main page."""
-    html = kkbox_get(artist_url)
+def _extract_songs_from_html(html: str, seen: set[str],
+                             out: list[tuple[str, str]],
+                             max_songs: int) -> None:
+    """Append (title, song_url) pairs extracted from `html` to `out`, in order,
+    skipping ones already in `seen`. Mutates seen + out in place."""
     soup = BeautifulSoup(html, "lxml")
-    out: list[tuple[str, str]] = []
-    seen: set[str] = set()
     for a in soup.select('a[href*="/tw/tc/song/"]'):
+        if len(out) >= max_songs:
+            return
         href = (a.get("href") or "").split("?", 1)[0]
         segs = _path_segments(href)
         if len(segs) < 4 or segs[:3] != ["tw", "tc", "song"]:
@@ -126,8 +128,71 @@ def fetch_artist_songs(artist_url: str, max_songs: int = 100) -> list[tuple[str,
             continue
         seen.add(song_url)
         out.append((title, song_url))
+
+
+def _extract_album_urls(html: str) -> list[str]:
+    """Find /tw/tc/album/<id> links from an artist page (overview or albums tab)."""
+    soup = BeautifulSoup(html, "lxml")
+    urls: list[str] = []
+    seen: set[str] = set()
+    for a in soup.select('a[href*="/tw/tc/album/"]'):
+        href = (a.get("href") or "").split("?", 1)[0]
+        segs = _path_segments(href)
+        if len(segs) < 4 or segs[:3] != ["tw", "tc", "album"]:
+            continue
+        url = urljoin(KKBOX_BASE, href) if href.startswith("/") else href
+        if url in seen:
+            continue
+        seen.add(url)
+        urls.append(url)
+    return urls
+
+
+def fetch_artist_songs(artist_url: str, max_songs: int = 200,
+                       sleep_s: float = 1.0) -> list[tuple[str, str]]:
+    """Return [(title, song_url), ...] for an artist.
+
+    KKBox's artist overview page only shows ~9 'top' songs. To get the full
+    catalog we also walk every album the artist has and scrape its track list.
+    """
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    overview = kkbox_get(artist_url)
+    _extract_songs_from_html(overview, seen, out, max_songs)
+    initial_n = len(out)
+
+    # Find every album linked from the overview, plus any extra albums on
+    # the dedicated /album sub-page when KKBox uses one.
+    album_urls = _extract_album_urls(overview)
+    try:
+        time.sleep(sleep_s)
+        albums_page = kkbox_get(artist_url.rstrip("/") + "/album")
+        for u in _extract_album_urls(albums_page):
+            if u not in album_urls:
+                album_urls.append(u)
+    except Exception:
+        pass  # /album subpage is optional
+
+    print(f"        discovered {len(album_urls)} album(s); top-9 gave {initial_n} song(s) — "
+          f"walking albums for the rest")
+
+    for i, album_url in enumerate(album_urls, start=1):
         if len(out) >= max_songs:
             break
+        try:
+            time.sleep(sleep_s)
+            html = kkbox_get(album_url)
+        except Exception as e:  # noqa: BLE001
+            print(f"        [warn] album {i}/{len(album_urls)} {album_url}: {e}")
+            continue
+        before = len(out)
+        _extract_songs_from_html(html, seen, out, max_songs)
+        added = len(out) - before
+        if added:
+            print(f"        album {i}/{len(album_urls)}: +{added} song(s) "
+                  f"(total {len(out)})")
+
     if not out:
         raise RuntimeError(
             f"could not extract song list from {artist_url}. "
