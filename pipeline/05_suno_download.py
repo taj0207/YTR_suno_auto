@@ -30,6 +30,22 @@ from pipeline._lib import paths, suno  # noqa: E402
 
 MIN_WAV_BYTES = 1_000_000
 
+# Filesystem-unsafe chars on Windows (also stripped on other OSes for portability).
+_FS_INVALID = __import__("re").compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+
+def _sanitize_filename(name: str, max_len: int = 80) -> str:
+    s = _FS_INVALID.sub("_", name).strip().strip(". ")
+    # Collapse whitespace runs to a single space
+    s = " ".join(s.split())
+    if not s:
+        return ""
+    up = s.upper()
+    # Windows reserved device names
+    if up in {"CON", "PRN", "AUX", "NUL"} or __import__("re").match(r"^(COM|LPT)\d$", up):
+        s = "_" + s
+    return s[:max_len]
+
 
 def load_log(job: str) -> dict:
     path = paths.generation_log_path(job)
@@ -44,8 +60,21 @@ def save_log(job: str, log: dict) -> None:
     )
 
 
-def wav_local_path(job: str, song_id: str, variant: int) -> Path:
-    return paths.job_downloads(job) / f"{song_id}_v{variant}.wav"
+def wav_local_path(job: str, song_id: str, variant: int, title: str | None = None) -> Path:
+    """Name files as '<title>_v<n>.wav' when title is available; append a short
+    song_id segment to break collisions if multiple submissions share the same
+    title. Fall back to '<song_id>_v<n>.wav' if no usable title."""
+    base_dir = paths.job_downloads(job)
+    safe_title = _sanitize_filename(title or "")
+    if not safe_title:
+        return base_dir / f"{song_id}_v{variant}.wav"
+    primary = base_dir / f"{safe_title}_v{variant}.wav"
+    # If something already exists at this path and it's NOT ours, append a
+    # short song_id suffix to avoid clobbering.
+    if primary.exists():
+        # Use first 8 chars of song_id to disambiguate
+        primary = base_dir / f"{safe_title}_{song_id[:8]}_v{variant}.wav"
+    return primary
 
 
 def needs_work(track: dict, job: str) -> bool:
@@ -56,6 +85,16 @@ def needs_work(track: dict, job: str) -> bool:
         if p.exists() and p.stat().st_size >= MIN_WAV_BYTES:
             return False
     return True
+
+
+def _existing_local_path(track: dict, job: str) -> Path | None:
+    """Resolve the on-disk WAV file we previously wrote for this track,
+    so we don't rewrite under a new name when the title finally arrives."""
+    lp = track.get("local_path")
+    if not lp:
+        return None
+    p = paths.job_dir(job) / lp
+    return p if p.exists() else None
 
 
 def process_track(client: suno.SunoClient, track: dict, job: str, *, save_callback) -> None:
@@ -134,8 +173,8 @@ def process_track(client: suno.SunoClient, track: dict, job: str, *, save_callba
         print(f"[{track['wav_status'][:4]}] {sid}: {e}", file=sys.stderr)
         return
 
-    # 5. Persist file
-    dest = wav_local_path(job, sid, track["variant"])
+    # 5. Persist file (named after the Suno/Gemini title when available)
+    dest = wav_local_path(job, sid, track["variant"], title=track.get("title"))
     try:
         if wav_url:
             print(f"[dl  ] {sid}: -> {dest.name}")
