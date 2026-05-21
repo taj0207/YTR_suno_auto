@@ -8,6 +8,14 @@ vocal_style: ""              # extra qualifier, e.g. "raspy", "breathy"
 suno:
   wid: "84cca4a7-1ed8-43eb-984a-94d451900800"
   workspace_url: "https://suno.com/create?wid=84cca4a7-1ed8-43eb-984a-94d451900800"
+  # Optional: Suno "Voice" / "Persona" UUID. When set, every generate in this
+  # workspace uses that persona (Suno's vocal-character preset). Leave null to
+  # inherit whatever the template captured (i.e. whatever Voice was selected
+  # when you primed the template by clicking Create).
+  # Find your UUID: in Suno UI, pick a Voice in the dropdown, click Create,
+  # then watch the extension SW console — the SUNO POST body will show
+  # "persona_id": "<uuid>". Paste that uuid here.
+  persona_id: null
 
 style_summary: >
   Depressed Billie Eilish style, English, male vocal. Catchy lines with rhyme,

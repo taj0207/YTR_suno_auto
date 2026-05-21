@@ -120,7 +120,8 @@ class SunoClient:
 
     def _build_payload(self, *, mode: str, prompt: str = "", tags: str = "",
                        description: str = "", title: str = "",
-                       mv: str | None = None) -> dict:
+                       mv: str | None = None,
+                       persona_id: str | None = None) -> dict:
         if not self.bridge:
             raise SunoError("bridge required for generate")
         try:
@@ -135,6 +136,10 @@ class SunoClient:
         body["token_provider"] = None
         if mv:
             body["mv"] = mv
+        # Override persona_id only when the workspace explicitly specifies one;
+        # otherwise inherit whatever the template captured.
+        if persona_id:
+            body["persona_id"] = persona_id
         if mode == "vocal":
             body["prompt"] = prompt
             body["tags"] = tags

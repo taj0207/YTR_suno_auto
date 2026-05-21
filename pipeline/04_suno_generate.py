@@ -262,9 +262,13 @@ def main() -> int:
                     voice_tag = f"{vocal_style} {vocal} vocal".strip().replace("  ", " ")
                     if voice_tag and voice_tag.lower() not in styles.lower()[:60]:
                         styles = f"{voice_tag}, {styles}"
-                    suno_input = {"title": title, "lyrics": lyrics, "styles": styles}
-                    print(f"[gen ] {song}: vocal (title={title!r} voice={voice_tag!r} lyrics={len(lyrics)} styles={len(styles)})")
-                    song_ids = client.submit_vocal(lyrics=lyrics, styles=styles, title=title, wid=ws.wid)
+                    persona_id = (ws.config.get("suno") or {}).get("persona_id")
+                    suno_input = {"title": title, "lyrics": lyrics, "styles": styles,
+                                  "persona_id": persona_id}
+                    print(f"[gen ] {song}: vocal (title={title!r} voice={voice_tag!r} "
+                          f"persona_id={persona_id!r} lyrics={len(lyrics)} styles={len(styles)})")
+                    song_ids = client.submit_vocal(lyrics=lyrics, styles=styles, title=title,
+                                                   wid=ws.wid, persona_id=persona_id)
                 else:
                     description = prompt_text.strip()
                     suno_input = {"description": description}
