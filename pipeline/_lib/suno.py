@@ -108,14 +108,21 @@ class SunoClient:
     # Bearer attach).
 
     def submit_vocal(self, *, lyrics: str, styles: str, title: str = "",
-                     wid: str | None = None, mv: str | None = None) -> list[str]:
+                     wid: str | None = None, mv: str | None = None,
+                     persona_id: str | None = None,
+                     vocal_gender: str | None = None) -> list[str]:
         body = self._build_payload(mode="vocal", prompt=lyrics, tags=styles,
-                                   title=title, mv=mv)
+                                   title=title, mv=mv, persona_id=persona_id,
+                                   vocal_gender=vocal_gender)
         return self._post_generate(body)
 
     def submit_instrumental(self, *, description: str, wid: str | None = None,
-                            mv: str | None = None) -> list[str]:
-        body = self._build_payload(mode="instrumental", description=description, mv=mv)
+                            mv: str | None = None,
+                            persona_id: str | None = None,
+                            vocal_gender: str | None = None) -> list[str]:
+        body = self._build_payload(mode="instrumental", description=description,
+                                   mv=mv, persona_id=persona_id,
+                                   vocal_gender=vocal_gender)
         return self._post_generate(body)
 
     def _build_payload(self, *, mode: str, prompt: str = "", tags: str = "",
