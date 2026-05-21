@@ -60,19 +60,26 @@ def save_log(job: str, log: dict) -> None:
     )
 
 
-def wav_local_path(job: str, song_id: str, variant: int, title: str | None = None) -> Path:
+def wav_local_path(job: str, song_id: str, variant: int, title: str | None = None,
+                   existing: str | None = None) -> Path:
     """Name files as '<title>_v<n>.wav' when title is available; append a short
-    song_id segment to break collisions if multiple submissions share the same
-    title. Fall back to '<song_id>_v<n>.wav' if no usable title."""
+    song_id segment if a *different* clip already wrote to that filename. Falls
+    back to '<song_id>_v<n>.wav' if no usable title.
+
+    If `existing` (track.local_path from generation_log) is given, reuse that
+    path — that file belongs to THIS clip from a previous run, so we want to
+    rewrite it in place, not generate a parallel filename.
+    """
     base_dir = paths.job_downloads(job)
+    if existing:
+        p = paths.job_dir(job) / existing
+        return p
     safe_title = _sanitize_filename(title or "")
     if not safe_title:
         return base_dir / f"{song_id}_v{variant}.wav"
     primary = base_dir / f"{safe_title}_v{variant}.wav"
-    # If something already exists at this path and it's NOT ours, append a
-    # short song_id suffix to avoid clobbering.
     if primary.exists():
-        # Use first 8 chars of song_id to disambiguate
+        # Different clip already owns this filename — disambiguate with song_id.
         primary = base_dir / f"{safe_title}_{song_id[:8]}_v{variant}.wav"
     return primary
 
@@ -174,7 +181,9 @@ def process_track(client: suno.SunoClient, track: dict, job: str, *, save_callba
         return
 
     # 5. Persist file (named after the Suno/Gemini title when available)
-    dest = wav_local_path(job, sid, track["variant"], title=track.get("title"))
+    dest = wav_local_path(job, sid, track["variant"],
+                          title=track.get("title"),
+                          existing=track.get("local_path"))
     try:
         if wav_url:
             print(f"[dl  ] {sid}: -> {dest.name}")
