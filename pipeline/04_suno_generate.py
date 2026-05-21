@@ -41,6 +41,14 @@ from pipeline._lib import dedup, paths, suno, workspace as ws_lib  # noqa: E402
 LYRICS_HEADER_RE = re.compile(r"(?im)^\s*(lyrics?|歌詞)\s*:?\s*$")
 STYLES_HEADER_RE = re.compile(r"(?im)^\s*(styles?|style|風格)\s*:?\s*$")
 NOTES_HEADER_RE = re.compile(r"(?im)^\s*(studio\s*production\s*notes?|production\s*notes?)\s*:?\s*$")
+# First lyric section header — used to strip Gemini preamble like
+# "Here are the lyrics for a...:" that would otherwise be sung by Suno.
+SECTION_HEADER_RE = re.compile(
+    r"\[\s*(?:intro|verse|pre[-\s]?chorus|chorus|bridge|hook|refrain|"
+    r"outro|drop|build[-\s]?up|breakdown|interlude|coda|instrumental|"
+    r"post[-\s]?chorus)[^\]]*\]",
+    re.IGNORECASE,
+)
 
 
 def split_vocal_prompt(text: str) -> tuple[str, str]:
@@ -49,14 +57,15 @@ def split_vocal_prompt(text: str) -> tuple[str, str]:
     Strategy:
       1. Look for a 'Studio Production Notes' header — content after it is the styles block.
       2. Everything above the notes header (and any 'Lyrics:' section above it) is lyrics.
-      3. Fallback: split at the last paragraph that looks like style descriptors.
+      3. Strip any preamble before the first [Verse]/[Intro]/etc. section header
+         — otherwise Suno will sing things like "Here are the lyrics...".
+      4. Fallback: split at the last paragraph that looks like style descriptors.
     """
     notes_match = NOTES_HEADER_RE.search(text)
     if notes_match:
         lyrics = text[:notes_match.start()].strip()
         styles = text[notes_match.end():].strip()
     else:
-        # fallback: last blank-line-separated block is styles
         parts = re.split(r"\n\s*\n", text.strip())
         if len(parts) >= 2:
             lyrics = "\n\n".join(parts[:-1]).strip()
@@ -65,9 +74,14 @@ def split_vocal_prompt(text: str) -> tuple[str, str]:
             lyrics = text.strip()
             styles = ""
 
-    # Clean up trailing "lyrics:" / "styles:" headers if present
     lyrics = LYRICS_HEADER_RE.sub("", lyrics).strip()
     styles = STYLES_HEADER_RE.sub("", styles).strip()
+
+    # Strip Gemini preamble: drop everything before the first section header.
+    sec = SECTION_HEADER_RE.search(lyrics)
+    if sec and sec.start() > 0:
+        lyrics = lyrics[sec.start():].strip()
+
     return lyrics, styles
 
 
