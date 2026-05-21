@@ -264,13 +264,12 @@ def main() -> int:
                         raise RuntimeError("no KKBox artist page found")
                     print(f"        -> {artist_url}")
                 time.sleep(args.sleep)
-                # How many songs are already in catalog that are NOT yet
-                # submitted? Subtract them from what we still need to fetch.
-                already_pending = 0
-                if existing:
-                    already_pending = sum(1 for s in existing.songs if not s.submitted)
-                enough_at = max(0, limit + args.buffer - already_pending)
-                enough_at = min(enough_at, args.max_fetch) if enough_at else args.max_fetch
+                # Aim to collect (limit + buffer) songs per scrape — merge dedups
+                # against existing catalog so the catalog only grows by however
+                # many are truly new. Don't try to subtract already_pending: most
+                # of a re-scrape overlaps with existing entries, so subtracting
+                # would systematically under-fetch.
+                enough_at = min(limit + args.buffer, args.max_fetch)
                 print(f"[scrp] {slug}: fetching songs (target ~{enough_at}, "
                       f"hard cap {args.max_fetch}, sleep {args.sleep}s/req)")
                 titles_and_urls = fetch_artist_songs(
