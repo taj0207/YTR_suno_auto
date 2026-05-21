@@ -263,15 +263,15 @@ def main() -> int:
                     if voice_tag and voice_tag.lower() not in styles.lower()[:60]:
                         styles = f"{voice_tag}, {styles}"
                     persona_id = (ws.config.get("suno") or {}).get("persona_id")
-                    vocal_gender_raw = (ws.config.get("vocal") or "").strip().lower()
+                    vocal_gender = suno.normalize_vocal_gender(ws.config.get("vocal"))
                     suno_input = {"title": title, "lyrics": lyrics, "styles": styles,
-                                  "persona_id": persona_id, "vocal_gender": vocal_gender_raw}
+                                  "persona_id": persona_id, "vocal_gender": vocal_gender}
                     print(f"[gen ] {song}: vocal (title={title!r} voice={voice_tag!r} "
-                          f"gender={vocal_gender_raw!r} persona_id={persona_id!r} "
+                          f"gender={vocal_gender!r} persona_id={persona_id!r} "
                           f"lyrics={len(lyrics)} styles={len(styles)})")
                     song_ids = client.submit_vocal(lyrics=lyrics, styles=styles, title=title,
                                                    wid=ws.wid, persona_id=persona_id,
-                                                   vocal_gender=vocal_gender_raw)
+                                                   vocal_gender=vocal_gender)
                 else:
                     description = prompt_text.strip()
                     suno_input = {"description": description}

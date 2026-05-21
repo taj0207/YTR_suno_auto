@@ -47,6 +47,24 @@ class SunoError(RuntimeError):
     pass
 
 
+_VOCAL_GENDER_MAP = {
+    "m": "m", "male": "m", "man": "m", "boy": "m", "men": "m",
+    "f": "f", "female": "f", "woman": "f", "girl": "f", "women": "f",
+    "": "",
+}
+
+
+def normalize_vocal_gender(raw: str | None) -> str | None:
+    """Normalise workspace 'vocal' values into Suno's body.vocal_gender form
+    ('m' / 'f'). Returns None when raw is None/empty so callers can skip the
+    field entirely and let the template's captured value stand."""
+    if not raw:
+        return None
+    vg = raw.strip().lower()
+    mapped = _VOCAL_GENDER_MAP.get(vg, vg)
+    return mapped or None
+
+
 # === Auth source ============================================================
 
 @contextmanager
@@ -149,16 +167,9 @@ class SunoClient:
         if persona_id:
             body["persona_id"] = persona_id
         # Suno's Voice dropdown maps to body.vocal_gender ("m" / "f").
-        # Normalise common spellings.
-        if vocal_gender:
-            vg = vocal_gender.strip().lower()
-            mapped = {
-                "m": "m", "male": "m", "man": "m",
-                "f": "f", "female": "f", "woman": "f",
-                "": "",
-            }.get(vg, vg)
-            if mapped:
-                body["vocal_gender"] = mapped
+        mapped = normalize_vocal_gender(vocal_gender)
+        if mapped:
+            body["vocal_gender"] = mapped
         if mode == "vocal":
             body["prompt"] = prompt
             body["tags"] = tags
