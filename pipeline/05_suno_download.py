@@ -18,7 +18,9 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import sys
+import time
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -63,20 +65,33 @@ def process_track(client: suno.SunoClient, track: dict, job: str, *, save_callba
     track["attempts"] = track.get("attempts", 0) + 1
     track["error"] = None
 
-    # 1. Refresh metadata; ensure generation is complete.
-    clips = client.fetch_feed([sid])
-    if not clips:
-        track["error"] = "song_id not found in feed"
-        return
-    clip = clips[0]
-    if suno.is_failed(clip):
-        track["status"] = "failed"
-        track["error"] = clip.get("error_message") or "Suno marked failed"
-        return
-    if not suno.is_complete(clip):
+    # 1. Wait until clip is TRULY complete — Suno's /convert_wav/ rejects
+    #    'streaming' with {"detail":"Clip must be complete."}.
+    wait_max = float(os.environ.get("SUNO_WAV_WAIT_MAX_S", "420"))   # 7 min
+    poll = float(os.environ.get("SUNO_WAV_POLL_S", "15"))
+    deadline = time.monotonic() + wait_max
+    clip = None
+    while time.monotonic() < deadline:
+        clips = client.fetch_feed([sid])
+        if not clips:
+            track["error"] = "song_id not found in feed"
+            return
+        clip = clips[0]
+        if suno.is_failed(clip):
+            track["status"] = "failed"
+            track["error"] = clip.get("error_message") or "Suno marked failed"
+            return
+        if suno.is_truly_complete(clip):
+            break
+        s = (clip.get("status") or "").lower()
+        print(f"[wait] {sid}: status={s}, waiting for 'complete' ({int(deadline - time.monotonic())}s left)")
+        time.sleep(poll)
+    else:
         track["status"] = "pending"
-        track["error"] = f"still generating (suno status: {clip.get('status')})"
+        track["wav_status"] = "timeout"
+        track["error"] = f"clip never reached 'complete' (last: {clip and clip.get('status')})"
         return
+
     track["status"] = "complete"
     track["audio_url_mp3"] = clip.get("audio_url") or track.get("audio_url_mp3")
     track["title"] = clip.get("title") or track.get("title")

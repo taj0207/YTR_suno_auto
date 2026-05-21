@@ -461,19 +461,30 @@ def _find_any_url(obj) -> str | None:
     return None
 
 
+# Statuses where the song is "playable" — enough to release Suno's
+# concurrency cap so we can submit the next song.
 _DONE_STATUSES = {"complete", "complete_clean", "streamed", "streaming", "finished"}
+# Stricter: statuses where Suno will actually accept a WAV-export request.
+# 'streaming' means audio is deliverable but not finalised; convert_wav
+# rejects with {"detail":"Clip must be complete."} until status==complete.
+_TRULY_DONE_STATUSES = {"complete", "complete_clean", "finished"}
 _FAILED_STATUSES = {"error", "failed", "cancelled", "canceled"}
 
 
 def is_complete(clip: dict) -> bool:
     """A clip whose audio is playable. Suno's `streaming` state means the
     audio is already deliverable — the job is no longer 'running' for the
-    purposes of the concurrency cap."""
+    purposes of the concurrency cap. NOT sufficient for WAV download —
+    use is_truly_complete for that."""
     s = (clip.get("status") or "").lower()
     if s in _DONE_STATUSES:
         return True
-    # Belt-and-braces: if audio_url is set, the song exists no matter the label.
     return bool(clip.get("audio_url"))
+
+
+def is_truly_complete(clip: dict) -> bool:
+    """Strict: the clip is finalised. Required before /convert_wav/."""
+    return (clip.get("status") or "").lower() in _TRULY_DONE_STATUSES
 
 
 def is_failed(clip: dict) -> bool:
