@@ -255,8 +255,15 @@ def main() -> int:
                             "could not split prompt into (lyrics, styles). "
                             "Check that the Gemini output has a 'Studio Production Notes' section."
                         )
+                    # Always prepend the configured vocal qualifier so Suno
+                    # respects gender even if Gemini's notes don't mention it.
+                    vocal = (ws.config.get("vocal") or "").strip()
+                    vocal_style = (ws.config.get("vocal_style") or "").strip()
+                    voice_tag = f"{vocal_style} {vocal} vocal".strip().replace("  ", " ")
+                    if voice_tag and voice_tag.lower() not in styles.lower()[:60]:
+                        styles = f"{voice_tag}, {styles}"
                     suno_input = {"title": title, "lyrics": lyrics, "styles": styles}
-                    print(f"[gen ] {song}: vocal (title={title!r} lyrics={len(lyrics)} styles={len(styles)})")
+                    print(f"[gen ] {song}: vocal (title={title!r} voice={voice_tag!r} lyrics={len(lyrics)} styles={len(styles)})")
                     song_ids = client.submit_vocal(lyrics=lyrics, styles=styles, title=title, wid=ws.wid)
                 else:
                     description = prompt_text.strip()
