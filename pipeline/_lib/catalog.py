@@ -72,13 +72,46 @@ def save(catalog: Catalog) -> Path:
 
 
 _NON_ASCII = re.compile(r"[^a-z0-9]+")
+# Common Album Version / Remastered / Live suffix patterns we want to drop
+# *before* romanising so the slug describes the song, not the release.
+_VERSION_SUFFIX_RE = re.compile(
+    r"\s*[\-–—:(\[]\s*("
+    r"album\s*version|remaster(ed)?(\s*\d{4})?|live(\s*at\s+.+)?|"
+    r"演唱會|現場版|電影版|movie\s*version|"
+    r"acoustic|piano|demo|edit|radio\s*edit|extended\s*mix"
+    r")\b.*$",
+    re.IGNORECASE,
+)
+
+
+def _romanise(text: str) -> str:
+    """Convert any Chinese characters to lowercase pinyin; leave the rest as-is."""
+    try:
+        from pypinyin import lazy_pinyin, Style
+    except ImportError:
+        return text  # graceful fallback if pypinyin not installed yet
+    return " ".join(lazy_pinyin(text, style=Style.NORMAL, errors="default"))
 
 
 def slugify(text: str, existing: set[str] | None = None) -> str:
-    """ASCII-slugify a (probably Chinese) title. On collision, suffix _2, _3…"""
-    # If text is mostly Chinese, slugify can produce empty — fall back to a hash.
-    base = _NON_ASCII.sub("_", text.lower().strip("_")).strip("_")
-    if not base:
+    """Slugify a song title to a filesystem-friendly ASCII id.
+
+    Pipeline:
+      1. Strip generic release suffixes ('- Album Version', '(Remastered 2003)', '演唱會'…).
+      2. Romanise Chinese characters via pypinyin (戀無可戀 → 'lian wu ke lian').
+      3. Lowercase + replace non-[a-z0-9] runs with underscores.
+      4. Cap at 50 chars so we don't produce monstrous filenames.
+      5. Fallback to 'song_<hash>' if step 3 produced nothing meaningful.
+      6. On collision with `existing`, suffix _2, _3, …
+    """
+    stripped = _VERSION_SUFFIX_RE.sub("", text).strip()
+    if not stripped:
+        stripped = text
+    romanised = _romanise(stripped)
+    base = _NON_ASCII.sub("_", romanised.lower().strip("_")).strip("_")
+    if len(base) > 50:
+        base = base[:50].rstrip("_")
+    if not base or len(base) < 2:
         base = "song_" + dedup.content_hash([text])[:8]
     if existing is None or base not in existing:
         return base
