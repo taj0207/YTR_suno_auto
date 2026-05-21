@@ -108,7 +108,11 @@ def main() -> int:
 
         out_path.write_text(response, encoding="utf-8")
         dedup.write_hash(out_path, digest)
-        print(f"[ok  ] {song}: wrote {out_path} ({len(response)} chars)")
+        # Save the prompt we sent to Gemini next to the response so we can
+        # audit "what we asked" vs "what we got" without re-rendering.
+        in_path = out_path.with_suffix(".input.txt")
+        in_path.write_text(rendered, encoding="utf-8")
+        print(f"[ok  ] {song}: wrote {out_path} ({len(response)} chars), input -> {in_path.name}")
         n_written += 1
 
     print(
