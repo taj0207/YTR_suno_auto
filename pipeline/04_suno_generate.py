@@ -41,6 +41,7 @@ from pipeline._lib import dedup, paths, suno, workspace as ws_lib  # noqa: E402
 LYRICS_HEADER_RE = re.compile(r"(?im)^\s*(lyrics?|歌詞)\s*:?\s*$")
 STYLES_HEADER_RE = re.compile(r"(?im)^\s*(styles?|style|風格)\s*:?\s*$")
 NOTES_HEADER_RE = re.compile(r"(?im)^\s*(studio\s*production\s*notes?|production\s*notes?)\s*:?\s*$")
+TITLE_LINE_RE = re.compile(r"(?im)^\s*title\s*[:：]\s*(.+?)\s*$")
 # First lyric section header — used to strip Gemini preamble like
 # "Here are the lyrics for a...:" that would otherwise be sung by Suno.
 SECTION_HEADER_RE = re.compile(
@@ -51,16 +52,25 @@ SECTION_HEADER_RE = re.compile(
 )
 
 
-def split_vocal_prompt(text: str) -> tuple[str, str]:
-    """Split a Gemini response into (lyrics, styles) for Suno advanced mode.
+def split_vocal_prompt(text: str) -> tuple[str, str, str]:
+    """Split a Gemini response into (title, lyrics, styles) for Suno.
 
     Strategy:
-      1. Look for a 'Studio Production Notes' header — content after it is the styles block.
-      2. Everything above the notes header (and any 'Lyrics:' section above it) is lyrics.
-      3. Strip any preamble before the first [Verse]/[Intro]/etc. section header
+      1. Pull a 'Title: ...' line from the top if present.
+      2. Look for a 'Studio Production Notes' header — content after it is the styles block.
+      3. Everything above the notes header (and any 'Lyrics:' section above it) is lyrics.
+      4. Strip any preamble before the first [Verse]/[Intro]/etc. section header
          — otherwise Suno will sing things like "Here are the lyrics...".
-      4. Fallback: split at the last paragraph that looks like style descriptors.
+      5. Fallback: split at the last paragraph that looks like style descriptors.
     """
+    # Extract title from the first matching "Title:" line (case-insensitive)
+    title = ""
+    m_title = TITLE_LINE_RE.search(text)
+    if m_title:
+        title = m_title.group(1).strip().strip('"\'')
+        # Remove the title line from the body so it doesn't end up in lyrics
+        text = (text[:m_title.start()] + text[m_title.end():]).strip()
+
     notes_match = NOTES_HEADER_RE.search(text)
     if notes_match:
         lyrics = text[:notes_match.start()].strip()
@@ -82,7 +92,7 @@ def split_vocal_prompt(text: str) -> tuple[str, str]:
     if sec and sec.start() > 0:
         lyrics = lyrics[sec.start():].strip()
 
-    return lyrics, styles
+    return title, lyrics, styles
 
 
 def load_submissions_index() -> dict[str, dict]:
@@ -239,15 +249,15 @@ def main() -> int:
                 time.sleep(submit_delay_s)
             try:
                 if args.mode == "vocal":
-                    lyrics, styles = split_vocal_prompt(prompt_text)
+                    title, lyrics, styles = split_vocal_prompt(prompt_text)
                     if not lyrics or not styles:
                         raise RuntimeError(
                             "could not split prompt into (lyrics, styles). "
                             "Check that the Gemini output has a 'Studio Production Notes' section."
                         )
-                    suno_input = {"lyrics": lyrics, "styles": styles}
-                    print(f"[gen ] {song}: vocal (lyrics={len(lyrics)} styles={len(styles)})")
-                    song_ids = client.submit_vocal(lyrics=lyrics, styles=styles, wid=ws.wid)
+                    suno_input = {"title": title, "lyrics": lyrics, "styles": styles}
+                    print(f"[gen ] {song}: vocal (title={title!r} lyrics={len(lyrics)} styles={len(styles)})")
+                    song_ids = client.submit_vocal(lyrics=lyrics, styles=styles, title=title, wid=ws.wid)
                 else:
                     description = prompt_text.strip()
                     suno_input = {"description": description}

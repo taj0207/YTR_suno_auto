@@ -107,9 +107,10 @@ class SunoClient:
     # request runs inside the user's suno.com tab (same-origin cookies +
     # Bearer attach).
 
-    def submit_vocal(self, *, lyrics: str, styles: str, wid: str | None = None,
-                     mv: str | None = None) -> list[str]:
-        body = self._build_payload(mode="vocal", prompt=lyrics, tags=styles, mv=mv)
+    def submit_vocal(self, *, lyrics: str, styles: str, title: str = "",
+                     wid: str | None = None, mv: str | None = None) -> list[str]:
+        body = self._build_payload(mode="vocal", prompt=lyrics, tags=styles,
+                                   title=title, mv=mv)
         return self._post_generate(body)
 
     def submit_instrumental(self, *, description: str, wid: str | None = None,
@@ -118,7 +119,8 @@ class SunoClient:
         return self._post_generate(body)
 
     def _build_payload(self, *, mode: str, prompt: str = "", tags: str = "",
-                       description: str = "", mv: str | None = None) -> dict:
+                       description: str = "", title: str = "",
+                       mv: str | None = None) -> dict:
         if not self.bridge:
             raise SunoError("bridge required for generate")
         try:
@@ -138,7 +140,7 @@ class SunoClient:
             body["tags"] = tags
             body["gpt_description_prompt"] = ""
             body["make_instrumental"] = False
-            body.setdefault("title", "")
+            body["title"] = title or ""
             body.setdefault("negative_tags", "")
             md = body.setdefault("metadata", {})
             md["create_mode"] = "custom"
