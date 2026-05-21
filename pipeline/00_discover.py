@@ -27,7 +27,7 @@ from dotenv import load_dotenv
 from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from pipeline._lib import catalog as cat_lib, paths  # noqa: E402
+from pipeline._lib import catalog as cat_lib, paths, suno_bridge  # noqa: E402
 
 KKBOX_BASE = "https://www.kkbox.com"
 UA = (
@@ -35,6 +35,42 @@ UA = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 )
 HEADERS = {"User-Agent": UA, "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8"}
+
+
+def _waf_blocked(html: str) -> bool:
+    return ("awsWafCookieDomainList" in html or
+            "AwsWafIntegration" in html or
+            len(html) < 200)
+
+
+def kkbox_get(url: str) -> str:
+    """GET a KKBox URL. Plain requests first; if WAF blocks (now common on
+    artist pages too), route through the YTR Suno Bridge extension so the
+    request runs as a real navigation in a kkbox.com tab."""
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=20)
+        if r.ok and not _waf_blocked(r.text):
+            return r.text
+    except Exception:
+        pass
+    # Fall back to bridge / tab-navigate
+    try:
+        bridge = suno_bridge.get_bridge()
+        bridge.wait_for_extension(timeout=30)
+    except suno_bridge.SunoBridgeError as e:
+        raise RuntimeError(
+            f"KKBox blocked by WAF and bridge unavailable: {e}. "
+            "Install the YTR Suno Bridge extension and keep Chrome open."
+        ) from e
+    status, _hdrs, body = bridge.fetch(url, method="GET", timeout=60)
+    html = body.decode("utf-8", errors="replace")
+    if status != 200 or _waf_blocked(html):
+        raise RuntimeError(
+            f"KKBox still WAF-blocking via bridge (status={status}). "
+            "Open https://www.kkbox.com/ in your Chrome once, solve any "
+            "CAPTCHA, then retry."
+        )
+    return html
 
 
 def _path_segments(href: str) -> list[str]:
@@ -47,9 +83,8 @@ def _path_segments(href: str) -> list[str]:
 def search_artist_url(name: str) -> str | None:
     """Find a KKBox artist page URL by searching for the artist's name."""
     url = f"{KKBOX_BASE}/tw/tc/search?q={quote_plus(name)}"
-    r = requests.get(url, headers=HEADERS, timeout=20)
-    r.raise_for_status()
-    soup = BeautifulSoup(r.text, "lxml")
+    html = kkbox_get(url)
+    soup = BeautifulSoup(html, "lxml")
     # Artist link path: /tw/tc/artist/<id>  (4 segments). Anchor may use
     # absolute (https://www.kkbox.com/...) or relative href.
     for a in soup.select('a[href*="/tw/tc/artist/"]'):
@@ -62,9 +97,8 @@ def search_artist_url(name: str) -> str | None:
 
 def fetch_artist_songs(artist_url: str, max_songs: int = 100) -> list[tuple[str, str]]:
     """Return [(title, song_url), ...] from the artist's main page."""
-    r = requests.get(artist_url, headers=HEADERS, timeout=20)
-    r.raise_for_status()
-    soup = BeautifulSoup(r.text, "lxml")
+    html = kkbox_get(artist_url)
+    soup = BeautifulSoup(html, "lxml")
     out: list[tuple[str, str]] = []
     seen: set[str] = set()
     for a in soup.select('a[href*="/tw/tc/song/"]'):
