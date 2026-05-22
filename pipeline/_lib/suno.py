@@ -270,6 +270,27 @@ class SunoClient:
                 md_new.setdefault("web_client_pathname", "/create")
             status, resp = self._post_generate_raw(new_body)
 
+        # 429 = Suno concurrency cap ('too_many_running_jobs'). wait_for_jobs
+        # already serialises us, but Suno doesn't release the slot the instant
+        # status flips to 'streaming' — there's a brief window where another
+        # submit still 429s. Also fires when the user has parallel jobs
+        # running outside this pipeline. Backoff longer than other endpoints.
+        if status == 429:
+            import sys as _sys
+            backoffs = [30.0, 60.0, 120.0]
+            for i, wait_s in enumerate(backoffs, start=1):
+                print(
+                    f"[suno] 429 too_many_running_jobs — waiting {wait_s:.0f}s "
+                    f"({i}/{len(backoffs)}). body: {resp[:200].decode(errors='replace')}",
+                    file=_sys.stderr,
+                )
+                time.sleep(wait_s)
+                # Fresh transaction_uuid each retry — Suno rejects replays.
+                body["transaction_uuid"] = str(uuid.uuid4())
+                status, resp = self._post_generate_raw(body)
+                if status != 429:
+                    break
+
         if status >= 400:
             raise SunoError(
                 f"generate failed: {status} {resp[:500].decode(errors='replace')}"
