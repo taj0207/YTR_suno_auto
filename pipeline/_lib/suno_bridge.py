@@ -10,10 +10,13 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import re
 import threading
 import time
 from concurrent.futures import Future
 from dataclasses import dataclass
+
+_APIBASE_RE = re.compile(r"apiBase=(\S+)")
 
 try:
     import websockets
@@ -51,6 +54,9 @@ class SunoBridge:
         # block on these instead of polling.
         self._template_event = threading.Event()
         self._bearer_event = threading.Event()
+        # Dedup state for noisy extension events.
+        self._last_bearer_apibase: str | None = None
+        self._bearer_seen_count = 0
 
     # --- lifecycle ----------------------------------------------------------
 
@@ -102,12 +108,25 @@ class SunoBridge:
                 if msg.get("type") == "event":
                     import sys as _sys
                     text = msg.get("text", "")
-                    print(f"[ext] {text}", file=_sys.stderr)
                     low = text.lower()
-                    if "template saved" in low:
-                        self._template_event.set()
                     if "bearer captured" in low:
+                        # Suno's SPA fires onBeforeSendHeaders constantly. Print
+                        # only when apiBase changes (or first time / every 50th
+                        # repeat for liveness). Always set the signal.
+                        m = _APIBASE_RE.search(text)
+                        cur = m.group(1) if m else None
+                        self._bearer_seen_count += 1
+                        if cur != self._last_bearer_apibase or self._bearer_seen_count == 1:
+                            print(f"[ext] {text}", file=_sys.stderr)
+                            self._last_bearer_apibase = cur
+                        elif self._bearer_seen_count % 50 == 0:
+                            print(f"[ext] (Bearer still captured ×{self._bearer_seen_count})",
+                                  file=_sys.stderr)
                         self._bearer_event.set()
+                    else:
+                        print(f"[ext] {text}", file=_sys.stderr)
+                        if "template saved" in low:
+                            self._template_event.set()
                     continue
                 if isinstance(msg.get("id"), int) and msg["id"] in self._pending:
                     fut = self._pending.pop(msg["id"])

@@ -174,14 +174,29 @@ def main() -> int:
 
     n_ok = n_fail = 0
     submit_delay_s = float(os.environ.get("SUNO_SUBMIT_DELAY_S", "5"))
-    job_wait_max_s = float(os.environ.get("SUNO_JOB_WAIT_MAX_S", "300"))
+    # Wait must be long enough for 'streaming' → 'complete' transition,
+    # which typically takes 1-3 min. Bump default from 300s to 600s.
+    job_wait_max_s = float(os.environ.get("SUNO_JOB_WAIT_MAX_S", "600"))
     job_poll_s = float(os.environ.get("SUNO_JOB_POLL_S", "10"))
+    # Per-song retry — recoverable failures (422/429 exhausted, network blip)
+    # rerun on the SAME song instead of skipping. After N consecutive song
+    # failures we abort the whole Step 4 so Suno-side outage doesn't burn the
+    # user's whole evening on retries.
+    song_attempts = int(os.environ.get("SUNO_PER_SONG_ATTEMPTS", "5"))
+    song_cooldown_s = float(os.environ.get("SUNO_PER_SONG_COOLDOWN_S", "60"))
+    abort_after = int(os.environ.get("SUNO_ABORT_AFTER_FAILS", "3"))
+    consecutive_fails = 0
     in_flight: list[str] = []  # song_ids from the most recent submission
 
     def wait_for_jobs(ids: list[str]) -> None:
+        """Block until every clip in `ids` is truly complete or failed.
+        Uses is_truly_complete (status == 'complete'/'finished') — NOT just
+        'streaming' — because Suno's concurrency cap counts streaming clips
+        as active and will 429 our next submit. Costs ~1-2 min per song
+        but eliminates the 429 storm root cause."""
         if not ids:
             return
-        print(f"[wait] for previous {len(ids)} variant(s) to finish (Suno 限制不允許並行) — polling /feed/v3...")
+        print(f"[wait] for previous {len(ids)} variant(s) to truly complete (Suno cap counts streaming) — polling /feed/v3...")
         deadline = time.monotonic() + job_wait_max_s
         while time.monotonic() < deadline:
             try:
@@ -201,13 +216,13 @@ def main() -> int:
                     continue
                 s = (c.get("status") or "").lower()
                 shown.append(s or "?")
-                if suno.is_complete(c) or suno.is_failed(c):
+                if suno.is_truly_complete(c) or suno.is_failed(c):
                     done += 1
-            print(f"        {done}/{len(ids)} done — {shown}")
+            print(f"        {done}/{len(ids)} truly_done — {shown}")
             if done >= len(ids):
                 return
             time.sleep(job_poll_s)
-        print(f"[warn] previous job didn't complete within {job_wait_max_s:.0f}s, proceeding anyway")
+        print(f"[warn] previous job didn't truly complete within {job_wait_max_s:.0f}s, proceeding anyway (next submit may 429)")
 
     with suno.session(headless=True) as client:
         # Create (or reuse) the Suno playlist for this job
@@ -242,6 +257,15 @@ def main() -> int:
                 print(f"[plst] could not create playlist: {e}", file=sys.stderr)
 
         prog = progress.StepProgress("Step 4 suno_generate", len(pending))
+
+        def persist_gen_log() -> None:
+            """Save generation_log.json to disk. Called after every successful
+            submit so an aborted Step 4 leaves Step 5 something to work on."""
+            log_path.write_text(
+                json.dumps(gen_log, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
         for idx, (song, prompt_path, prompt_text, prompt_hash) in enumerate(pending):
             prog.next(song)
             if in_flight:
@@ -249,6 +273,9 @@ def main() -> int:
                 in_flight = []
             elif idx > 0 and submit_delay_s > 0:
                 time.sleep(submit_delay_s)
+
+            # ---- prepare inputs (once per song, not per retry) ----
+            voice_tag = ""
             try:
                 if args.mode == "vocal":
                     title, lyrics, styles = split_vocal_prompt(prompt_text)
@@ -266,96 +293,139 @@ def main() -> int:
                         styles = f"{voice_tag}, {styles}"
                     persona_id = (ws.config.get("suno") or {}).get("persona_id")
                     vocal_gender = suno.normalize_vocal_gender(ws.config.get("vocal"))
-                    # Clip to Suno's field limits — Gemini sometimes overshoots
-                    # and /generate hard-422s. Better to trim and log than fail.
+                    # Clip to Suno's field limits.
                     title, t_clip = suno.clip_title(title)
                     lyrics, l_clip = suno.clip_lyrics(lyrics)
                     styles, s_clip = suno.clip_tags(styles)
-                    if t_clip or l_clip or s_clip:
-                        print(f"[clip] {song}: "
-                              f"title{' ✂' if t_clip else ''} "
-                              f"lyrics{' ✂' if l_clip else ''} "
-                              f"styles{' ✂' if s_clip else ''} "
-                              f"(limits {suno.SUNO_MAX_TITLE}/{suno.SUNO_MAX_LYRICS}/{suno.SUNO_MAX_TAGS})")
+                    clipped_parts = []
+                    if t_clip:
+                        clipped_parts.append(f"title→{len(title)}/{suno.SUNO_MAX_TITLE}")
+                    if l_clip:
+                        clipped_parts.append(f"lyrics→{len(lyrics)}/{suno.SUNO_MAX_LYRICS}")
+                    if s_clip:
+                        clipped_parts.append(f"styles→{len(styles)}/{suno.SUNO_MAX_TAGS}")
+                    if clipped_parts:
+                        print(f"[clip] {song}: ✂ " + ", ".join(clipped_parts))
                     suno_input = {"title": title, "lyrics": lyrics, "styles": styles,
                                   "persona_id": persona_id, "vocal_gender": vocal_gender}
+                    submit_kwargs = dict(lyrics=lyrics, styles=styles, title=title,
+                                         wid=ws.wid, persona_id=persona_id,
+                                         vocal_gender=vocal_gender)
+                    submit_fn = client.submit_vocal
                     print(f"[gen ] {song}: vocal (title={title!r} voice={voice_tag!r} "
                           f"gender={vocal_gender!r} persona_id={persona_id!r} "
                           f"lyrics={len(lyrics)} styles={len(styles)})")
-                    song_ids = client.submit_vocal(lyrics=lyrics, styles=styles, title=title,
-                                                   wid=ws.wid, persona_id=persona_id,
-                                                   vocal_gender=vocal_gender)
                 else:
                     description = prompt_text.strip()
-                    # Instrumental uses gpt_description_prompt — same field
-                    # length as lyrics. Clip with the same lyrics budget.
                     description, d_clip = suno.clip_lyrics(description)
                     if d_clip:
-                        print(f"[clip] {song}: description ✂ "
-                              f"(limit {suno.SUNO_MAX_LYRICS})")
+                        print(f"[clip] {song}: ✂ description→{len(description)}/{suno.SUNO_MAX_LYRICS}")
                     suno_input = {"description": description}
+                    submit_kwargs = dict(description=description, wid=ws.wid)
+                    submit_fn = client.submit_instrumental
                     print(f"[gen ] {song}: instrumental (desc={len(description)})")
-                    song_ids = client.submit_instrumental(description=description, wid=ws.wid)
-
-                print(f"[ok  ] {song}: song_ids={song_ids}")
-                in_flight = list(song_ids)
-                now = dt.datetime.now().astimezone().isoformat()
-
-                # Add the new clips to this job's Suno playlist
-                pid = gen_log.get("playlist_id")
-                if pid:
-                    try:
-                        client.add_to_playlist(pid, song_ids)
-                        print(f"[plst] added {len(song_ids)} clip(s) to playlist {pid}")
-                    except Exception as e:  # noqa: BLE001
-                        print(f"[plst] add_to_playlist failed: {e}", file=sys.stderr)
-
-                # Append to suno_submissions ledger
-                dedup.append_jsonl(paths.SUNO_SUBMISSIONS, {
-                    "prompt_hash":  prompt_hash,
-                    "workspace":    args.workspace,
-                    "wid":          ws.wid,
-                    "mode":         args.mode,
-                    "submitted_at": now,
-                    "source_song":  song,
-                    "prompt_file":  str(prompt_path),
-                    "suno_input":   suno_input,
-                    "song_ids":     song_ids,
-                    "job":          job,
-                })
-
-                # Add tracks to generation_log
-                for i, sid in enumerate(song_ids, start=1):
-                    if sid in existing_ids:
-                        continue
-                    gen_log["tracks"].append({
-                        "song_id":          sid,
-                        "variant":          i,
-                        "source_song":      song,
-                        "mode":             args.mode,
-                        "prompt_hash":      prompt_hash,
-                        "prompt_file":     str(prompt_path),
-                        "suno_input":       suno_input,
-                        "status":           "pending",
-                        "audio_url_mp3":    None,
-                        "wav_status":       "not_requested",
-                        "wav_url":          None,
-                        "local_path":       None,
-                        "size_bytes":       None,
-                        "duration_sec":     None,
-                        "suno_song_url":    f"https://suno.com/song/{sid}",
-                        "suno_description": None,
-                        "title":            None,
-                        "last_attempt_at":  None,
-                        "attempts":         0,
-                        "error":            None,
-                    })
-                    existing_ids.add(sid)
-                n_ok += 1
             except Exception as e:  # noqa: BLE001
-                print(f"[fail] {song}: {e}", file=sys.stderr)
+                print(f"[fail] {song}: prep error: {e}", file=sys.stderr)
                 n_fail += 1
+                consecutive_fails += 1
+                if consecutive_fails >= abort_after:
+                    print(f"[abort] {consecutive_fails} consecutive failures — Step 4 stopping",
+                          file=sys.stderr)
+                    break
+                continue
 
+            # ---- per-song retry loop ----
+            song_ids = None
+            last_err: Exception | None = None
+            for attempt in range(1, song_attempts + 1):
+                try:
+                    if attempt > 1:
+                        print(f"[retry] {song}: attempt {attempt}/{song_attempts}")
+                    song_ids = submit_fn(**submit_kwargs)
+                    break
+                except suno.SunoError as e:
+                    last_err = e
+                    print(f"[err  ] {song}: attempt {attempt}/{song_attempts}: {e}",
+                          file=sys.stderr)
+                    if attempt < song_attempts:
+                        print(f"        cooldown {song_cooldown_s:.0f}s before next attempt...")
+                        time.sleep(song_cooldown_s)
+
+            if not song_ids:
+                print(f"[give-up] {song}: exhausted {song_attempts} attempts "
+                      f"(last: {last_err})", file=sys.stderr)
+                n_fail += 1
+                consecutive_fails += 1
+                if consecutive_fails >= abort_after:
+                    print(f"[abort] {consecutive_fails} consecutive song failures — "
+                          f"Step 4 stopping. Already-submitted songs are in "
+                          f"{log_path} and will be picked up by Step 5.",
+                          file=sys.stderr)
+                    break
+                continue
+
+            # ---- success path ----
+            consecutive_fails = 0
+            print(f"[ok  ] {song}: song_ids={song_ids}")
+            in_flight = list(song_ids)
+            now = dt.datetime.now().astimezone().isoformat()
+
+            # Add the new clips to this job's Suno playlist
+            pid = gen_log.get("playlist_id")
+            if pid:
+                try:
+                    client.add_to_playlist(pid, song_ids)
+                    print(f"[plst] added {len(song_ids)} clip(s) to playlist {pid}")
+                except Exception as e:  # noqa: BLE001
+                    print(f"[plst] add_to_playlist failed: {e}", file=sys.stderr)
+
+            # Append to suno_submissions ledger (cheap, append-only file)
+            dedup.append_jsonl(paths.SUNO_SUBMISSIONS, {
+                "prompt_hash":  prompt_hash,
+                "workspace":    args.workspace,
+                "wid":          ws.wid,
+                "mode":         args.mode,
+                "submitted_at": now,
+                "source_song":  song,
+                "prompt_file":  str(prompt_path),
+                "suno_input":   suno_input,
+                "song_ids":     song_ids,
+                "job":          job,
+            })
+
+            # Add tracks to generation_log and PERSIST immediately so an abort
+            # below this point doesn't lose this song.
+            for i, sid in enumerate(song_ids, start=1):
+                if sid in existing_ids:
+                    continue
+                gen_log["tracks"].append({
+                    "song_id":          sid,
+                    "variant":          i,
+                    "source_song":      song,
+                    "mode":             args.mode,
+                    "prompt_hash":      prompt_hash,
+                    "prompt_file":     str(prompt_path),
+                    "suno_input":       suno_input,
+                    "status":           "pending",
+                    "audio_url_mp3":    None,
+                    "wav_status":       "not_requested",
+                    "wav_url":          None,
+                    "local_path":       None,
+                    "size_bytes":       None,
+                    "duration_sec":     None,
+                    "suno_song_url":    f"https://suno.com/song/{sid}",
+                    "suno_description": None,
+                    "title":            None,
+                    "last_attempt_at":  None,
+                    "attempts":         0,
+                    "error":            None,
+                })
+                existing_ids.add(sid)
+            persist_gen_log()
+            n_ok += 1
+
+    # Final write (even if we aborted mid-loop, persist_gen_log already saved
+    # the last successful state — this is a belt-and-braces no-op for safety).
     log_path.write_text(json.dumps(gen_log, ensure_ascii=False, indent=2), encoding="utf-8")
     prog.done(ok=n_ok, failed=n_fail)
     print(f"Wrote {log_path} ({len(gen_log['tracks'])} tracks total)")

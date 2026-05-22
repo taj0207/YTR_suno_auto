@@ -259,118 +259,121 @@ class SunoClient:
         )
         return status, resp
 
+    def _refresh_body_via_template(self, old_body: dict, *,
+                                   force_reload: bool) -> dict:
+        """Pull a fresh template from the extension (optionally forcing a
+        suno.com tab reload first) and return a new body that carries over
+        all per-request fields from old_body. Used by 422/429 recovery.
+        """
+        import sys as _sys
+        if self.refresh_auth():
+            print("[suno] refreshed Bearer from extension.", file=_sys.stderr)
+        if force_reload:
+            self.bridge.clear_generate_template()
+            print("[suno] reloading suno.com tab...", file=_sys.stderr)
+            self.bridge.reload_suno_tab()
+        new_tpl = self.bridge.wait_for_template(
+            timeout=float(os.environ.get("SUNO_TEMPLATE_WAIT", "300"))
+        )
+        new_body = json.loads(new_tpl)
+        # Carry over every per-request override we touched in _build_payload.
+        for k in ("prompt", "tags", "gpt_description_prompt", "make_instrumental",
+                  "title", "negative_tags", "vocal_gender", "persona_id"):
+            if k in old_body:
+                new_body[k] = old_body[k]
+        new_body["transaction_uuid"] = str(uuid.uuid4())
+        new_body["token"] = None
+        new_body["token_provider"] = None
+        md_old = old_body.get("metadata") or {}
+        md_new = new_body.setdefault("metadata", {})
+        if "create_mode" in md_old:
+            md_new["create_mode"] = md_old["create_mode"]
+            md_new.setdefault("web_client_pathname", "/create")
+        return new_body
+
     def _post_generate(self, body: dict) -> list[str]:
+        """Unified send + recovery. Loops over:
+          - transient TypeError ('Failed to fetch') → quick retry
+          - 422 token_validation_failed → refresh Bearer, reload tab, wait for
+            new template, rebuild body, retry. Cap: 2 reload cycles.
+          - 429 too_many_running_jobs → sleep (30/60/120s progression), then
+            refresh body WITHOUT forcing reload (the extension may already
+            have a fresher template captured from suno.com's own activity).
+            If retry comes back 422, the 422 branch picks it up next loop.
+          - Other 4xx/5xx → raise.
+        """
         if not self.bridge:
             raise SunoError("bridge required for generate")
+        import sys as _sys
 
-        # Network-layer transient retry. MAIN-world fetches inside the suno.com
-        # tab occasionally die with TypeError: Failed to fetch when the tab is
-        # mid-navigation or the connection blips. Retry once before giving up.
-        status, resp = (-1, b"")
-        last_err: Exception | None = None
-        for attempt in range(2):
+        backoffs_429 = [30.0, 60.0, 120.0]
+        max_422_cycles = 2
+        n_429 = 0
+        n_422 = 0
+        n_transient = 0
+        status, resp = -1, b""
+
+        while True:
             try:
                 status, resp = self._post_generate_raw(body)
-                break
             except (suno_bridge.SunoBridgeError, SunoError) as e:
-                last_err = e
                 msg = str(e).lower()
-                if "failed to fetch" not in msg and "typeerror" not in msg:
-                    raise SunoError(str(e)) from e
-                import sys as _sys
-                print(
-                    f"[suno] transient fetch error (attempt {attempt+1}/2): {e}",
-                    file=_sys.stderr,
-                )
-                if attempt == 0:
+                if ("failed to fetch" in msg or "typeerror" in msg) and n_transient == 0:
+                    n_transient += 1
+                    print(f"[suno] transient fetch error: {e} — retrying once in 5s",
+                          file=_sys.stderr)
                     time.sleep(5)
                     continue
                 raise SunoError(str(e)) from e
-        if status == -1 and last_err is not None:
-            raise SunoError(str(last_err)) from last_err
 
-        # 422 from /generate is essentially always token_validation_failed →
-        # cached template's create_session_token expired. Recovery cycle:
-        # (a) refresh Bearer from extension (it may also be stale),
-        # (b) clear template + reload suno.com tab,
-        # (c) wait for user to click Create on suno.com → fresh template,
-        # (d) retry. If still 422, loop the cycle once more — sometimes the
-        # first reload reuses cached auth and the user needs to click Create
-        # twice (or fully log out/in).
-        if status == 422:
-            import sys as _sys
-            for cycle in range(2):
+            if status < 400:
+                break
+
+            if status == 422:
+                n_422 += 1
+                if n_422 > max_422_cycles:
+                    break  # fall through to raise
                 print(
-                    f"\n[suno] 422 from /generate (cycle {cycle+1}/2) — session token expired."
+                    f"\n[suno] 422 token_validation_failed (cycle {n_422}/{max_422_cycles})"
                     f"\n       body: {resp[:300].decode(errors='replace')}",
                     file=_sys.stderr,
                 )
-                # (a) Refresh Bearer — the Authorization header in self.s may
-                # have aged out too; only the template-level token error 422s,
-                # but a fresh Bearer can't hurt and fixes the case where the
-                # extension already has a newer one.
-                if self.refresh_auth():
-                    print("[suno] refreshed Bearer from extension.", file=_sys.stderr)
-                # (b) Clear cached template + reload tab
-                self.bridge.clear_generate_template()
-                print("[suno] reloading suno.com tab...", file=_sys.stderr)
-                self.bridge.reload_suno_tab()
-                # (c) Wait for user to click Create
-                if cycle == 0:
-                    print(
-                        "[suno] After the page reloads, click 'Create' once on "
-                        "suno.com to refresh the template. Waiting...",
-                        file=_sys.stderr,
-                    )
+                if n_422 == 1:
+                    print("[suno] After the page reloads, click 'Create' once on "
+                          "suno.com to refresh the template. Waiting...",
+                          file=_sys.stderr)
                 else:
-                    print(
-                        "[suno] Still 422 after first cycle. If 422 keeps "
-                        "happening, log OUT of suno.com and log back in, then "
-                        "click Create again. Waiting...",
-                        file=_sys.stderr,
-                    )
-                new_tpl = self.bridge.wait_for_template(
-                    timeout=float(os.environ.get("SUNO_TEMPLATE_WAIT", "300"))
-                )
-                # (d) Rebuild body fields that depend on the template
-                new_body = json.loads(new_tpl)
-                for k in ("prompt", "tags", "gpt_description_prompt", "make_instrumental",
-                          "title", "negative_tags"):
-                    if k in body:
-                        new_body[k] = body[k]
-                new_body["transaction_uuid"] = str(uuid.uuid4())
-                new_body["token"] = None
-                new_body["token_provider"] = None
-                md_old = body.get("metadata") or {}
-                md_new = new_body.setdefault("metadata", {})
-                if "create_mode" in md_old:
-                    md_new["create_mode"] = md_old["create_mode"]
-                    md_new.setdefault("web_client_pathname", "/create")
-                status, resp = self._post_generate_raw(new_body)
-                if status != 422:
-                    break
-                body = new_body  # carry forward for next cycle's field merge
+                    print("[suno] Still 422 — log OUT of suno.com and log back in, "
+                          "then click Create again. Waiting...",
+                          file=_sys.stderr)
+                body = self._refresh_body_via_template(body, force_reload=True)
+                continue
 
-        # 429 = Suno concurrency cap ('too_many_running_jobs'). wait_for_jobs
-        # already serialises us, but Suno doesn't release the slot the instant
-        # status flips to 'streaming' — there's a brief window where another
-        # submit still 429s. Also fires when the user has parallel jobs
-        # running outside this pipeline. Backoff longer than other endpoints.
-        if status == 429:
-            import sys as _sys
-            backoffs = [30.0, 60.0, 120.0]
-            for i, wait_s in enumerate(backoffs, start=1):
+            if status == 429:
+                if n_429 >= len(backoffs_429):
+                    break  # fall through to raise
+                wait_s = backoffs_429[n_429]
+                n_429 += 1
                 print(
                     f"[suno] 429 too_many_running_jobs — waiting {wait_s:.0f}s "
-                    f"({i}/{len(backoffs)}). body: {resp[:200].decode(errors='replace')}",
+                    f"({n_429}/{len(backoffs_429)}). body: {resp[:200].decode(errors='replace')}",
                     file=_sys.stderr,
                 )
                 time.sleep(wait_s)
-                # Fresh transaction_uuid each retry — Suno rejects replays.
-                body["transaction_uuid"] = str(uuid.uuid4())
-                status, resp = self._post_generate_raw(body)
-                if status != 429:
-                    break
+                # Token will likely be stale by now. Rebuild body from whatever
+                # template the extension currently has cached (passive — the
+                # SPA's own polling usually keeps it fresh). If still stale,
+                # the next loop's 422 branch will trigger a forced reload.
+                try:
+                    body = self._refresh_body_via_template(body, force_reload=False)
+                except suno_bridge.SunoBridgeError:
+                    # No template at all — keep going with the old body; 422
+                    # branch on the next iter will force a reload.
+                    body["transaction_uuid"] = str(uuid.uuid4())
+                continue
+
+            # Other 4xx/5xx — don't retry
+            break
 
         if status >= 400:
             raise SunoError(
