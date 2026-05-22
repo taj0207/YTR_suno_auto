@@ -27,7 +27,7 @@ from dotenv import load_dotenv
 from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from pipeline._lib import catalog as cat_lib, paths, suno_bridge  # noqa: E402
+from pipeline._lib import catalog as cat_lib, paths, progress, suno_bridge  # noqa: E402
 
 KKBOX_BASE = "https://www.kkbox.com"
 UA = (
@@ -239,9 +239,11 @@ def main() -> int:
 
     pending_for_yaml: list[dict] = []
 
+    prog = progress.StepProgress("Step 0 discover", len(artists))
     for a in artists:
         slug = a["slug"]
         name = a["display_name"]
+        prog.next(f"{slug} ({name})")
         limit = int(a.get("limit", 20))
         # Allow user to skip the search step by hardcoding the artist URL.
         artist_url_override = a.get("kkbox_url")
@@ -316,7 +318,8 @@ def main() -> int:
         yaml.safe_dump({"songs": pending_for_yaml}, allow_unicode=True, sort_keys=False),
         encoding="utf-8",
     )
-    print(f"\nWrote {args.out} with {len(pending_for_yaml)} pending songs.")
+    prog.done()
+    print(f"Wrote {args.out} with {len(pending_for_yaml)} pending songs.")
     return 0
 
 

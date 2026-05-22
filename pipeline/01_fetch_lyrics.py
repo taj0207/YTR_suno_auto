@@ -31,7 +31,7 @@ from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from pipeline._lib import gemini, paths  # noqa: E402
+from pipeline._lib import gemini, paths, progress  # noqa: E402
 
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -164,10 +164,12 @@ def main() -> int:
         return 2
 
     n_ok = n_skip = n_fail = 0
+    prog = progress.StepProgress("Step 1 fetch_lyrics", len(songs))
     for entry in songs:
         name = entry["name"]
         title = entry["title"]
         artist = entry.get("artist")
+        prog.next(name)
 
         out = paths.lyric_raw(name)
         if out.exists() and not args.refresh_lyrics:
@@ -202,7 +204,8 @@ def main() -> int:
             print(f"[fail] {name}: {e}", file=sys.stderr)
             n_fail += 1
 
-    print(f"\nSummary: {n_ok} ok, {n_skip} skipped, {n_fail} failed.", file=sys.stderr)
+    prog.done(ok=n_ok, failed=n_fail)
+    print(f"Summary: {n_ok} ok, {n_skip} skipped, {n_fail} failed.", file=sys.stderr)
     return 0 if n_fail == 0 else 1
 
 

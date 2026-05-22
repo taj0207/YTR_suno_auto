@@ -26,7 +26,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from pipeline._lib import paths, suno  # noqa: E402
+from pipeline._lib import paths, progress, suno  # noqa: E402
 
 MIN_WAV_BYTES = 1_000_000
 
@@ -224,8 +224,10 @@ def main() -> int:
 
     print(f"processing {len(targets)} track(s)...")
     n_ok = n_fail = 0
+    prog = progress.StepProgress("Step 5 suno_download", len(targets))
     with suno.session(headless=True) as client:
         for track in targets:
+            prog.next(f"{track['source_song']}:{track['song_id'][:8]}")
             try:
                 process_track(client, track, args.job, save_callback=persist)
                 if track["wav_status"] == "ready":
@@ -238,7 +240,8 @@ def main() -> int:
                 n_fail += 1
             persist()
 
-    print(f"\nSummary: {n_ok} ready, {n_fail} need retry next run.", file=sys.stderr)
+    prog.done(ok=n_ok, failed=n_fail)
+    print(f"Summary: {n_ok} ready, {n_fail} need retry next run.", file=sys.stderr)
     return 0 if n_fail == 0 else 1
 
 

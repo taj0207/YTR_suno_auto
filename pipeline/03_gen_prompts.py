@@ -28,7 +28,7 @@ from dotenv import load_dotenv
 # Allow `python pipeline/03_gen_prompts.py` invocation
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pipeline._lib import dedup, gemini, paths, workspace as ws_lib  # noqa: E402
+from pipeline._lib import dedup, gemini, paths, progress, workspace as ws_lib  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -80,7 +80,9 @@ def main() -> int:
     n_written = 0
     n_failed = 0
 
+    prog = progress.StepProgress("Step 3 gen_prompts", len(args.song))
     for song in args.song:
+        prog.next(song)
         lyrics_path = paths.lyric_en(song)
         if not lyrics_path.exists():
             print(f"[skip] {song}: missing {lyrics_path}", file=sys.stderr)
@@ -115,8 +117,9 @@ def main() -> int:
         print(f"[ok  ] {song}: wrote {out_path} ({len(response)} chars), input -> {in_path.name}")
         n_written += 1
 
+    prog.done(ok=n_written, failed=n_failed)
     print(
-        f"\nSummary: {n_written} written, {n_skipped} skipped (cached), {n_failed} failed.",
+        f"Summary: {n_written} written, {n_skipped} skipped (cached), {n_failed} failed.",
         file=sys.stderr,
     )
     return 0 if n_failed == 0 else 1

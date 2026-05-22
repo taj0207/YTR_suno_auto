@@ -23,7 +23,7 @@ import requests
 from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from pipeline._lib import dedup, paths  # noqa: E402
+from pipeline._lib import dedup, paths, progress  # noqa: E402
 
 ENDPOINT = "https://translation.googleapis.com/language/translate/v2"
 
@@ -66,7 +66,9 @@ def main() -> int:
     force = args.force_step == 2
     n_ok = n_skip = n_fail = 0
 
+    prog = progress.StepProgress("Step 2 translate", len(songs))
     for song in songs:
+        prog.next(song)
         src = paths.lyric_raw(song)
         if not src.exists():
             print(f"[skip] {song}: missing {src}", file=sys.stderr)
@@ -93,7 +95,8 @@ def main() -> int:
             print(f"[fail] {song}: {e}", file=sys.stderr)
             n_fail += 1
 
-    print(f"\nSummary: {n_ok} ok, {n_skip} skipped, {n_fail} failed.", file=sys.stderr)
+    prog.done(ok=n_ok, failed=n_fail)
+    print(f"Summary: {n_ok} ok, {n_skip} skipped, {n_fail} failed.", file=sys.stderr)
     return 0 if n_fail == 0 else 1
 
 

@@ -36,7 +36,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from pipeline._lib import dedup, paths, suno, workspace as ws_lib  # noqa: E402
+from pipeline._lib import dedup, paths, progress, suno, workspace as ws_lib  # noqa: E402
 
 LYRICS_HEADER_RE = re.compile(r"(?im)^\s*(lyrics?|歌詞)\s*:?\s*$")
 STYLES_HEADER_RE = re.compile(r"(?im)^\s*(styles?|style|風格)\s*:?\s*$")
@@ -241,7 +241,9 @@ def main() -> int:
             except Exception as e:  # noqa: BLE001
                 print(f"[plst] could not create playlist: {e}", file=sys.stderr)
 
+        prog = progress.StepProgress("Step 4 suno_generate", len(pending))
         for idx, (song, prompt_path, prompt_text, prompt_hash) in enumerate(pending):
+            prog.next(song)
             if in_flight:
                 wait_for_jobs(in_flight)
                 in_flight = []
@@ -355,7 +357,8 @@ def main() -> int:
                 n_fail += 1
 
     log_path.write_text(json.dumps(gen_log, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"\nWrote {log_path} ({len(gen_log['tracks'])} tracks total)")
+    prog.done(ok=n_ok, failed=n_fail)
+    print(f"Wrote {log_path} ({len(gen_log['tracks'])} tracks total)")
     print(f"Summary: {n_ok} submitted, {n_fail} failed.", file=sys.stderr)
     return 0 if n_fail == 0 else 1
 
