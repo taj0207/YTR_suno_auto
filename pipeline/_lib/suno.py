@@ -65,6 +65,63 @@ def normalize_vocal_gender(raw: str | None) -> str | None:
     return mapped or None
 
 
+# Suno field length limits (v4-5 chirp). Env-overridable in case Suno changes
+# them or a different mv has tighter caps. /generate returns 422 if exceeded,
+# so the safer move is to clip pre-flight and log what was trimmed.
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name) or default)
+    except ValueError:
+        return default
+
+
+SUNO_MAX_LYRICS = _env_int("SUNO_MAX_LYRICS", 5000)
+SUNO_MAX_TAGS = _env_int("SUNO_MAX_TAGS", 200)
+SUNO_MAX_TITLE = _env_int("SUNO_MAX_TITLE", 80)
+
+
+def _truncate_at_break(s: str, max_len: int) -> str:
+    """Trim s to <= max_len chars, preferring to cut at a newline or sentence
+    boundary near the end so lyrics don't get cut mid-word."""
+    if len(s) <= max_len:
+        return s
+    head = s[:max_len]
+    # Try last newline within the last 15% of the budget
+    window = max(1, max_len // 7)
+    cut = head.rfind("\n", max_len - window)
+    if cut == -1:
+        cut = head.rfind(". ", max_len - window)
+    if cut == -1:
+        cut = head.rfind(" ", max_len - window)
+    return (head[:cut].rstrip() if cut > 0 else head).rstrip()
+
+
+def clip_lyrics(s: str) -> tuple[str, bool]:
+    """Return (clipped_lyrics, was_clipped)."""
+    if len(s) <= SUNO_MAX_LYRICS:
+        return s, False
+    return _truncate_at_break(s, SUNO_MAX_LYRICS), True
+
+
+def clip_tags(s: str) -> tuple[str, bool]:
+    """Return (clipped_tags, was_clipped). Cut on comma if possible — tags are
+    a comma-separated list, mid-phrase is worse than dropping a tail tag."""
+    if len(s) <= SUNO_MAX_TAGS:
+        return s, False
+    head = s[:SUNO_MAX_TAGS]
+    cut = head.rfind(",")
+    if cut > 0:
+        return head[:cut].rstrip(), True
+    return head.rstrip(), True
+
+
+def clip_title(s: str) -> tuple[str, bool]:
+    """Return (clipped_title, was_clipped)."""
+    if len(s) <= SUNO_MAX_TITLE:
+        return s, False
+    return s[:SUNO_MAX_TITLE].rstrip(), True
+
+
 # === Auth source ============================================================
 
 @contextmanager

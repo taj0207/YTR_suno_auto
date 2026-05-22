@@ -264,6 +264,17 @@ def main() -> int:
                         styles = f"{voice_tag}, {styles}"
                     persona_id = (ws.config.get("suno") or {}).get("persona_id")
                     vocal_gender = suno.normalize_vocal_gender(ws.config.get("vocal"))
+                    # Clip to Suno's field limits — Gemini sometimes overshoots
+                    # and /generate hard-422s. Better to trim and log than fail.
+                    title, t_clip = suno.clip_title(title)
+                    lyrics, l_clip = suno.clip_lyrics(lyrics)
+                    styles, s_clip = suno.clip_tags(styles)
+                    if t_clip or l_clip or s_clip:
+                        print(f"[clip] {song}: "
+                              f"title{' ✂' if t_clip else ''} "
+                              f"lyrics{' ✂' if l_clip else ''} "
+                              f"styles{' ✂' if s_clip else ''} "
+                              f"(limits {suno.SUNO_MAX_TITLE}/{suno.SUNO_MAX_LYRICS}/{suno.SUNO_MAX_TAGS})")
                     suno_input = {"title": title, "lyrics": lyrics, "styles": styles,
                                   "persona_id": persona_id, "vocal_gender": vocal_gender}
                     print(f"[gen ] {song}: vocal (title={title!r} voice={voice_tag!r} "
@@ -274,6 +285,12 @@ def main() -> int:
                                                    vocal_gender=vocal_gender)
                 else:
                     description = prompt_text.strip()
+                    # Instrumental uses gpt_description_prompt — same field
+                    # length as lyrics. Clip with the same lyrics budget.
+                    description, d_clip = suno.clip_lyrics(description)
+                    if d_clip:
+                        print(f"[clip] {song}: description ✂ "
+                              f"(limit {suno.SUNO_MAX_LYRICS})")
                     suno_input = {"description": description}
                     print(f"[gen ] {song}: instrumental (desc={len(description)})")
                     song_ids = client.submit_instrumental(description=description, wid=ws.wid)
