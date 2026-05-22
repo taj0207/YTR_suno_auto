@@ -76,7 +76,7 @@ def _env_int(name: str, default: int) -> int:
 
 
 SUNO_MAX_LYRICS = _env_int("SUNO_MAX_LYRICS", 5000)
-SUNO_MAX_TAGS = _env_int("SUNO_MAX_TAGS", 200)
+SUNO_MAX_TAGS = _env_int("SUNO_MAX_TAGS", 1000)
 SUNO_MAX_TITLE = _env_int("SUNO_MAX_TITLE", 80)
 
 
