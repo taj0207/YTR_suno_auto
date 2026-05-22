@@ -233,42 +233,66 @@ class SunoClient:
             raise SunoError(str(last_err)) from last_err
 
         # 422 from /generate is essentially always token_validation_failed →
-        # cached template has a stale create_session_token. Reload suno.com
-        # (refreshes the SPA's session) and wait for a fresh template, then
-        # retry once.
+        # cached template's create_session_token expired. Recovery cycle:
+        # (a) refresh Bearer from extension (it may also be stale),
+        # (b) clear template + reload suno.com tab,
+        # (c) wait for user to click Create on suno.com → fresh template,
+        # (d) retry. If still 422, loop the cycle once more — sometimes the
+        # first reload reuses cached auth and the user needs to click Create
+        # twice (or fully log out/in).
         if status == 422:
             import sys as _sys
-            print(
-                f"\n[suno] 422 from /generate — likely session token expired."
-                f"\n       body: {resp[:300].decode(errors='replace')}",
-                file=_sys.stderr,
-            )
-            self.bridge.clear_generate_template()
-            print("[suno] asking extension to reload suno.com tab...", file=_sys.stderr)
-            self.bridge.reload_suno_tab()
-            print(
-                "[suno] After the page reloads, click 'Create' once on suno.com "
-                "to refresh the template. Waiting...",
-                file=_sys.stderr,
-            )
-            new_tpl = self.bridge.wait_for_template(
-                timeout=float(os.environ.get("SUNO_TEMPLATE_WAIT", "300"))
-            )
-            # Rebuild body fields that depend on the template
-            new_body = json.loads(new_tpl)
-            for k in ("prompt", "tags", "gpt_description_prompt", "make_instrumental",
-                      "title", "negative_tags"):
-                if k in body:
-                    new_body[k] = body[k]
-            new_body["transaction_uuid"] = str(uuid.uuid4())
-            new_body["token"] = None
-            new_body["token_provider"] = None
-            md_old = body.get("metadata") or {}
-            md_new = new_body.setdefault("metadata", {})
-            if "create_mode" in md_old:
-                md_new["create_mode"] = md_old["create_mode"]
-                md_new.setdefault("web_client_pathname", "/create")
-            status, resp = self._post_generate_raw(new_body)
+            for cycle in range(2):
+                print(
+                    f"\n[suno] 422 from /generate (cycle {cycle+1}/2) — session token expired."
+                    f"\n       body: {resp[:300].decode(errors='replace')}",
+                    file=_sys.stderr,
+                )
+                # (a) Refresh Bearer — the Authorization header in self.s may
+                # have aged out too; only the template-level token error 422s,
+                # but a fresh Bearer can't hurt and fixes the case where the
+                # extension already has a newer one.
+                if self.refresh_auth():
+                    print("[suno] refreshed Bearer from extension.", file=_sys.stderr)
+                # (b) Clear cached template + reload tab
+                self.bridge.clear_generate_template()
+                print("[suno] reloading suno.com tab...", file=_sys.stderr)
+                self.bridge.reload_suno_tab()
+                # (c) Wait for user to click Create
+                if cycle == 0:
+                    print(
+                        "[suno] After the page reloads, click 'Create' once on "
+                        "suno.com to refresh the template. Waiting...",
+                        file=_sys.stderr,
+                    )
+                else:
+                    print(
+                        "[suno] Still 422 after first cycle. If 422 keeps "
+                        "happening, log OUT of suno.com and log back in, then "
+                        "click Create again. Waiting...",
+                        file=_sys.stderr,
+                    )
+                new_tpl = self.bridge.wait_for_template(
+                    timeout=float(os.environ.get("SUNO_TEMPLATE_WAIT", "300"))
+                )
+                # (d) Rebuild body fields that depend on the template
+                new_body = json.loads(new_tpl)
+                for k in ("prompt", "tags", "gpt_description_prompt", "make_instrumental",
+                          "title", "negative_tags"):
+                    if k in body:
+                        new_body[k] = body[k]
+                new_body["transaction_uuid"] = str(uuid.uuid4())
+                new_body["token"] = None
+                new_body["token_provider"] = None
+                md_old = body.get("metadata") or {}
+                md_new = new_body.setdefault("metadata", {})
+                if "create_mode" in md_old:
+                    md_new["create_mode"] = md_old["create_mode"]
+                    md_new.setdefault("web_client_pathname", "/create")
+                status, resp = self._post_generate_raw(new_body)
+                if status != 422:
+                    break
+                body = new_body  # carry forward for next cycle's field merge
 
         # 429 = Suno concurrency cap ('too_many_running_jobs'). wait_for_jobs
         # already serialises us, but Suno doesn't release the slot the instant
